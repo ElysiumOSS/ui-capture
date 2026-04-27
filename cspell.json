@@ -1,0 +1,29 @@
+{
+	"dictionaries": ["npm", "node", "typescript"],
+	"ignorePaths": [
+		".all-contributorsrc",
+		".github",
+		"CHANGELOG.md",
+		"coverage",
+		"docs",
+		"lib",
+		"node_modules",
+		"bun.lock"
+	],
+	"words": [
+		"bunx",
+		"chromium",
+		"codegen",
+		"elysiumoss",
+		"ffmpeg",
+		"libwebp",
+		"libvpx",
+		"networkidle",
+		"Odnis",
+		"playwright",
+		"subdirs",
+		"tsdown",
+		"webm",
+		"webp"
+	]
+}

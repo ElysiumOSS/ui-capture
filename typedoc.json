@@ -1,0 +1,16 @@
+{
+	"$schema": "https://typedoc.org/schema.json",
+	"entryPoints": ["src/*"],
+	"out": "./docs",
+	"exclude": [
+		"**/*.test.ts",
+		"**/*.test.tsx",
+		"**/*.*spec*.ts",
+		"**/*.*spec*.tsx"
+	],
+	"readme": "README.md",
+	"sort": ["source-order"],
+	"includeVersion": true,
+	"gitRevision": "master",
+	"cleanOutputDir": true
+}
