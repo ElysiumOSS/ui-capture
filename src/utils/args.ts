@@ -22,8 +22,11 @@
 import { Schema } from "effect";
 
 const ParsedArgs = Schema.Struct({
-  positional: Schema.Array(Schema.String),
-  options: Schema.Record({ key: Schema.String, value: Schema.Union(Schema.String, Schema.Boolean) }),
+	positional: Schema.Array(Schema.String),
+	options: Schema.Record({
+		key: Schema.String,
+		value: Schema.Union(Schema.String, Schema.Boolean),
+	}),
 });
 
 export type ParsedArgs = Schema.Schema.Type<typeof ParsedArgs>;
@@ -32,47 +35,51 @@ export type ParsedArgs = Schema.Schema.Type<typeof ParsedArgs>;
  * Basic command line argument parser
  * Supports --key value, --key=value, --flag, and positional arguments
  */
-export function parseArgs(args: string[], booleanFlags: string[] = []): ParsedArgs {
-  const positional: string[] = [];
-  const options: Record<string, string | boolean> = {};
+export function parseArgs(
+	args: string[],
+	booleanFlags: string[] = [],
+): ParsedArgs {
+	const positional: string[] = [];
+	const options: Record<string, string | boolean> = {};
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    
-    if (arg.startsWith('--')) {
-      const longArg = arg.slice(2);
-      
-      // Handle --key=value
-      if (longArg.includes('=')) {
-        const [key, ...valueParts] = longArg.split('=');
-        if (key) {
-          options[key] = valueParts.join('=');
-        }
-        continue;
-      }
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === undefined) continue;
 
-      const key = longArg;
-      const nextArg = args[i + 1];
-      
-      // If it's a known boolean flag, don't consume next arg
-      if (booleanFlags.includes(key)) {
-        options[key] = true;
-        continue;
-      }
+		if (arg.startsWith("--")) {
+			const longArg = arg.slice(2);
 
-      // If next arg exists and isn't another flag, consume it as value
-      if (nextArg && !nextArg.startsWith('--')) {
-        options[key] = nextArg;
-        i++;
-      } else {
-        options[key] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
+			// Handle --key=value
+			if (longArg.includes("=")) {
+				const [key, ...valueParts] = longArg.split("=");
+				if (key) {
+					options[key] = valueParts.join("=");
+				}
+				continue;
+			}
 
-  return { positional, options };
+			const key = longArg;
+			const nextArg = args[i + 1];
+
+			// If it's a known boolean flag, don't consume next arg
+			if (booleanFlags.includes(key)) {
+				options[key] = true;
+				continue;
+			}
+
+			// If next arg exists and isn't another flag, consume it as value
+			if (nextArg && !nextArg.startsWith("--")) {
+				options[key] = nextArg;
+				i++;
+			} else {
+				options[key] = true;
+			}
+		} else {
+			positional.push(arg);
+		}
+	}
+
+	return { positional, options };
 }
 
 /**
@@ -83,14 +90,17 @@ export const SEPARATOR = "=".repeat(80);
 /**
  * Display a stylized header
  */
-export function displayHeader(title: string, details: Record<string, string>): void {
-  console.log();
-  console.log(SEPARATOR);
-  console.log(`  🚀 ${title}`);
-  console.log(SEPARATOR);
-  for (const [key, value] of Object.entries(details)) {
-    console.log(`  • ${key}: ${value}`);
-  }
-  console.log(SEPARATOR);
-  console.log();
+export function displayHeader(
+	title: string,
+	details: Record<string, string>,
+): void {
+	console.log();
+	console.log(SEPARATOR);
+	console.log(`  🚀 ${title}`);
+	console.log(SEPARATOR);
+	for (const [key, value] of Object.entries(details)) {
+		console.log(`  • ${key}: ${value}`);
+	}
+	console.log(SEPARATOR);
+	console.log();
 }

@@ -20,7 +20,7 @@ import path from "node:path";
 import { Effect } from "effect";
 import type { Page } from "playwright";
 import { CaptureError, FileSystemError } from "./errors.js";
-import { ScreenshotPaths, ViewportConfig } from "./schemas.js";
+import { ScreenshotPaths, type ViewportConfig } from "./schemas.js";
 import { captureRetryPolicy, pipeImageThroughFfmpeg } from "./shared.js";
 
 export interface CaptureScreenshotsConfig {
@@ -75,7 +75,7 @@ const releaseMaskStyle = (
 				try: () =>
 					page.evaluate((id: string) => {
 						const existing = document.getElementById(id);
-						if (existing && existing.parentNode) {
+						if (existing?.parentNode) {
 							existing.parentNode.removeChild(existing);
 						}
 					}, styleId),

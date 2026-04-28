@@ -21,8 +21,8 @@ import { Effect } from "effect";
 import { FileSystemError } from "./errors.js";
 import {
 	CaptureReport,
-	CaptureResult,
-	ViewportConfig,
+	type CaptureResult,
+	type ViewportConfig,
 } from "./schemas.js";
 
 const generateMarkdown = (
@@ -45,20 +45,16 @@ const generateMarkdown = (
 
 		for (const [viewport, formats] of Object.entries(result.screenshots)) {
 			md += `#### ${viewport.toUpperCase()} (Screenshots)\n\n`;
-			const relPng = path
-				.relative(outputDir, formats.png)
-				.replace(/\\/g, "/");
+			const relPng = path.relative(outputDir, formats.png).replace(/\\/g, "/");
 			const relWebp = path
 				.relative(outputDir, formats.webp)
 				.replace(/\\/g, "/");
-			const relJpg = path
-				.relative(outputDir, formats.jpg)
-				.replace(/\\/g, "/");
+			const relJpg = path.relative(outputDir, formats.jpg).replace(/\\/g, "/");
 			md += `- PNG (lossless): [View](${relPng})\n`;
 			md += `- WebP (optimized): [View](${relWebp})\n`;
 			md += `- JPEG (compatible): [View](${relJpg})\n\n`;
 
-			if (result.videos && result.videos[viewport]) {
+			if (result.videos?.[viewport]) {
 				md += `**${viewport.toUpperCase()} Videos:**\n\n`;
 				const videos = result.videos[viewport];
 				const relHigh = path
@@ -67,9 +63,7 @@ const generateMarkdown = (
 				const relMedium = path
 					.relative(outputDir, videos.medium)
 					.replace(/\\/g, "/");
-				const relLow = path
-					.relative(outputDir, videos.low)
-					.replace(/\\/g, "/");
+				const relLow = path.relative(outputDir, videos.low).replace(/\\/g, "/");
 				md += `- High Quality (1:1 scale): [Watch](${relHigh})\n`;
 				md += `- Medium Quality (0.75x scale): [Watch](${relMedium})\n`;
 				md += `- Low Quality (0.5x scale): [Watch](${relLow})\n\n`;

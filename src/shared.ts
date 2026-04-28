@@ -149,14 +149,8 @@ export const computeHostSuffixes = (host: string): readonly string[] => {
 };
 
 export interface HostFilterState {
-	hydrate: (
-		primaryHost: string,
-		extraAllowedHosts: readonly string[],
-	) => void;
-	hostMatchesFilters: (
-		hostname: string,
-		includeSubdomains: boolean,
-	) => boolean;
+	hydrate: (primaryHost: string, extraAllowedHosts: readonly string[]) => void;
+	hostMatchesFilters: (hostname: string, includeSubdomains: boolean) => boolean;
 }
 
 export const createHostFilterState = (): HostFilterState => {
@@ -174,9 +168,7 @@ export const createHostFilterState = (): HostFilterState => {
 			// one dot to be a meaningful suffix.
 			hostSuffixes = new Set(
 				Array.from(allowedHostnames).flatMap((host) =>
-					computeHostSuffixes(host).filter((suffix) =>
-						suffix.includes("."),
-					),
+					computeHostSuffixes(host).filter((suffix) => suffix.includes(".")),
 				),
 			);
 		},

@@ -11,7 +11,8 @@
 
 ## Overview
 
-`ui-capture` drives a headless Chromium via Playwright to crawl a site, follow internal links up to a configurable depth, and snapshot every reachable route across multiple viewports. It is built on Effect for structured concurrency, retries, and predictable cleanup.
+`ui-capture` drives a headless Chromium via Playwright to crawl a site, follow internal links up to a configurable depth, and snapshot every reachable route across multiple viewports.
+It is built on Effect for structured concurrency, retries, and predictable cleanup.
 
 For each route it produces:
 
@@ -120,8 +121,10 @@ ui-captures/
 ## Notes
 
 - **Asset filtering** — link discovery skips URLs whose pathname ends in common asset extensions (`.css`, `.js`, `.png`, `.svg`, `.xml`, `.webmanifest`, fonts, media, archives) so frameworks that expose chunk paths in `__NEXT_DATA__` don't poison the crawl queue.
-- **Warm-up scroll** — before each screenshot pass, the page is scrolled top → bottom in steps and back, triggering IntersectionObserver-based lazy-loads and scroll-reveal animations. Disable with `--no-warmup`.
-- **Parallax** — true scroll-progress-driven parallax (pinned + transformed elements) renders at scroll=0 once warm-up returns to top. A stitched-capture mode for that case is on the roadmap.
+- **Warm-up scroll** — before each screenshot pass, the page is scrolled top → bottom in steps and back, triggering IntersectionObserver-based lazy-loads and scroll-reveal animations.
+  Disable with `--no-warmup`.
+- **Parallax** — true scroll-progress-driven parallax (pinned + transformed elements) renders at scroll=0 once warm-up returns to top.
+  A stitched-capture mode for that case is on the roadmap.
 
 ## License
 

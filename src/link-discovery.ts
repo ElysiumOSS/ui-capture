@@ -22,15 +22,53 @@ import { LINK_FILTER_CONCURRENCY } from "./shared.js";
 
 const ASSET_EXTENSIONS = new Set<string>([
 	// stylesheets / scripts / data
-	"css", "js", "mjs", "cjs", "map", "json", "xml", "webmanifest", "txt", "csv",
+	"css",
+	"js",
+	"mjs",
+	"cjs",
+	"map",
+	"json",
+	"xml",
+	"webmanifest",
+	"txt",
+	"csv",
 	// images
-	"png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "bmp", "tiff",
+	"png",
+	"jpg",
+	"jpeg",
+	"gif",
+	"svg",
+	"webp",
+	"avif",
+	"ico",
+	"bmp",
+	"tiff",
 	// media
-	"mp4", "webm", "mov", "avi", "mkv", "mp3", "wav", "ogg", "flac", "m4a",
+	"mp4",
+	"webm",
+	"mov",
+	"avi",
+	"mkv",
+	"mp3",
+	"wav",
+	"ogg",
+	"flac",
+	"m4a",
 	// fonts
-	"woff", "woff2", "ttf", "otf", "eot",
+	"woff",
+	"woff2",
+	"ttf",
+	"otf",
+	"eot",
 	// archives / docs
-	"pdf", "zip", "tar", "gz", "tgz", "bz2", "7z", "rar",
+	"pdf",
+	"zip",
+	"tar",
+	"gz",
+	"tgz",
+	"bz2",
+	"7z",
+	"rar",
 ]);
 
 const isAssetUrl = (pathname: string): boolean => {
@@ -92,7 +130,7 @@ export const createLinkDiscoveryTools = (options: {
 						const elements = Array.from(
 							document.querySelectorAll(selector),
 						).slice(0, 10);
-						elements.forEach((element) => safeClick(element));
+						for (const element of elements) safeClick(element);
 					});
 
 					window.scrollTo({
@@ -189,7 +227,9 @@ export const createLinkDiscoveryTools = (options: {
 								value
 									.split(/[\s,]+/)
 									.filter(Boolean)
-									.forEach((token) => addValue(token, discovered));
+									.forEach((token: string) => {
+										addValue(token, discovered);
+									});
 							});
 						});
 					}
@@ -219,8 +259,8 @@ export const createLinkDiscoveryTools = (options: {
 							for (const key of Object.keys(obj)) {
 								const lowered = key.toLowerCase();
 								if (
-									["route", "path", "href", "url", "to", "link"].some(
-										(token) => lowered.includes(token),
+									["route", "path", "href", "url", "to", "link"].some((token) =>
+										lowered.includes(token),
 									)
 								) {
 									collectFromObject(obj[key], into, depth + 1, limit);
@@ -232,6 +272,7 @@ export const createLinkDiscoveryTools = (options: {
 						}
 					};
 
+					// biome-ignore lint/suspicious/noExplicitAny: dynamic framework-specific globals lookup
 					const globalWindow = window as unknown as Record<string, any>;
 					const globalRouteSources = [
 						globalWindow.__ROUTES__,
@@ -248,7 +289,9 @@ export const createLinkDiscoveryTools = (options: {
 
 					globalRouteSources
 						.filter((source) => source !== undefined && source !== null)
-						.forEach((source) => collectFromObject(source, discovered));
+						.forEach((source: unknown) => {
+							collectFromObject(source, discovered);
+						});
 
 					return Array.from(discovered);
 				});

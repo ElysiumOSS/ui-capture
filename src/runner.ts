@@ -17,9 +17,9 @@
  */
 import path from "node:path";
 import { Effect } from "effect";
-import { parseArgs, type ParsedArgs } from "./utils/args.js";
 import type { CaptureConfigOverrides } from "./schemas.js";
 import { CaptureConfigLive, UICaptureService } from "./service.js";
+import { type ParsedArgs, parseArgs } from "./utils/args.js";
 
 const BOOLEAN_FLAGS = [
 	"help",
@@ -101,10 +101,13 @@ const parseViewports = (
 			);
 		}
 		const [, name, w, h] = match;
+		if (name === undefined || w === undefined || h === undefined) {
+			throw new Error(`Invalid viewport spec "${token}".`);
+		}
 		return {
-			name: name!,
-			width: Number.parseInt(w!, 10),
-			height: Number.parseInt(h!, 10),
+			name,
+			width: Number.parseInt(w, 10),
+			height: Number.parseInt(h, 10),
 		};
 	});
 };
@@ -137,10 +140,10 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 	const maxDepth = parseInteger(opts["max-depth"], "--max-depth");
 	if (maxDepth !== undefined) overrides.maxDepth = maxDepth;
 
-	const wait = parseInteger(opts["wait"], "--wait");
+	const wait = parseInteger(opts.wait, "--wait");
 	if (wait !== undefined) overrides.waitTime = wait;
 
-	const concurrency = parseInteger(opts["concurrency"], "--concurrency");
+	const concurrency = parseInteger(opts.concurrency, "--concurrency");
 	if (concurrency !== undefined) overrides.routeConcurrency = concurrency;
 
 	if (opts["include-subdomains"] === true) overrides.includeSubdomains = true;
@@ -148,16 +151,16 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 	const allowedHosts = parseList(opts["allowed-hosts"]);
 	if (allowedHosts) overrides.allowedHosts = allowedHosts;
 
-	const viewports = parseViewports(opts["viewports"]);
+	const viewports = parseViewports(opts.viewports);
 	if (viewports) overrides.viewports = viewports;
 
-	const hide = parseList(opts["hide"]);
+	const hide = parseList(opts.hide);
 	if (hide) overrides.screenshotHideSelectors = hide;
 
 	const menuSelectors = parseList(opts["menu-selectors"]);
 	if (menuSelectors) overrides.menuInteractionSelectors = menuSelectors;
 
-	if (opts["video"] === true) overrides.captureVideo = true;
+	if (opts.video === true) overrides.captureVideo = true;
 	if (opts["no-warmup"] === true) overrides.warmupScroll = false;
 
 	const videoDuration = parseInteger(
@@ -172,8 +175,8 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 		};
 	}
 
-	if (typeof opts["ffmpeg"] === "string") {
-		overrides.ffmpegPath = opts["ffmpeg"];
+	if (typeof opts.ffmpeg === "string") {
+		overrides.ffmpegPath = opts.ffmpeg;
 	}
 
 	return { url, overrides };
@@ -185,7 +188,7 @@ export const parseCliArgs = (argv: readonly string[]): ParsedArgs =>
 export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
 	const parsed = parseCliArgs(argv);
 
-	if (parsed.options["help"] === true || argv.length === 0) {
+	if (parsed.options.help === true || argv.length === 0) {
 		printUsage();
 		if (argv.length === 0) process.exit(1);
 		return;

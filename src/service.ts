@@ -24,12 +24,12 @@ import { createLinkDiscoveryTools } from "./link-discovery.js";
 import { generateReports } from "./report.js";
 import {
 	CaptureConfig,
-	CaptureConfigOverrides,
+	type CaptureConfigOverrides,
 	CaptureResult,
 	createCaptureConfig,
-	ScreenshotPaths,
-	ViewportConfig,
-	VideoQualityPaths,
+	type ScreenshotPaths,
+	type VideoQualityPaths,
+	type ViewportConfig,
 } from "./schemas.js";
 import { captureScreenshots } from "./screenshot.js";
 import {
@@ -37,8 +37,8 @@ import {
 	getRouteName,
 	navigationRetryPolicy,
 	normalizeUrl,
-	QueueTask,
-	RouteTask,
+	type QueueTask,
+	type RouteTask,
 	ShutdownSignal,
 } from "./shared.js";
 import { captureVideoForViewport } from "./video.js";
@@ -430,8 +430,9 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 													}),
 												);
 											}
+											const browserRef = browser;
 											const context = yield* Effect.tryPromise({
-												try: () => browser!.newContext(),
+												try: () => browserRef.newContext(),
 												catch: (error) =>
 													new CaptureError({
 														url,

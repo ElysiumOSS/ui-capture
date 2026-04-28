@@ -50,9 +50,7 @@ export const performWarmupScroll = (
 						new Promise<void>((r) => setTimeout(r, ms));
 					const nextFrame = () =>
 						new Promise<void>((r) =>
-							requestAnimationFrame(() =>
-								requestAnimationFrame(() => r()),
-							),
+							requestAnimationFrame(() => requestAnimationFrame(() => r())),
 						);
 
 					const docEl = document.documentElement;

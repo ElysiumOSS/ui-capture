@@ -11,18 +11,24 @@
 		"bun.lock"
 	],
 	"words": [
+		"Odnis",
 		"bunx",
 		"chromium",
 		"codegen",
 		"elysiumoss",
 		"ffmpeg",
-		"libwebp",
 		"libvpx",
+		"libwebp",
 		"networkidle",
-		"Odnis",
+		"normalises",
 		"playwright",
+		"routerlink",
+		"screenshotting",
+		"slugifies",
 		"subdirs",
 		"tsdown",
+		"unparseable",
+		"viewports",
 		"webm",
 		"webp"
 	]
