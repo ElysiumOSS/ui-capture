@@ -11,6 +11,6 @@
 	"readme": "README.md",
 	"sort": ["source-order"],
 	"includeVersion": true,
-	"gitRevision": "master",
+	"gitRevision": "main",
 	"cleanOutputDir": true
 }
