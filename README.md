@@ -49,6 +49,63 @@ flowchart LR
   Workers --> Report["capture-report.json + REPORT.md"]
 ```
 
+### Per-route capture sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Worker
+    participant Q as Queue
+    participant P as Page
+    participant FS as Filesystem
+    participant FF as ffmpeg
+
+    W->>Q: take task
+    Q-->>W: RouteTask{url, depth}
+    W->>P: page.goto(url, "networkidle")
+    P-->>W: load complete
+    W->>P: prepareForLinkDiscovery + extractLinks
+    P-->>W: internal URLs
+    W->>P: warm-up scroll (top→bottom→top)
+    loop each viewport
+        W->>P: setViewportSize(w, h)
+        W->>P: screenshot(png) → Buffer
+        W->>FS: write PNG (latest + history)
+        W->>FF: pipe PNG → libwebp
+        FF-->>FS: real WebP
+        W->>P: screenshot(jpeg)
+        W->>FS: write JPEG
+    end
+    W->>Q: schedule discovered links
+    W->>Q: markTaskComplete
+```
+
+### Worker pool lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Booting
+    Booting --> Idle: context + page acquired
+    Idle --> Processing: take(RouteTask)
+    Processing --> Idle: capturePage done<br/>markTaskComplete
+    Processing --> Idle: failure caught<br/>(Effect.catchAll)
+    Idle --> ShuttingDown: take(ShutdownSignal)
+    Processing --> ShuttingDown: pendingTasks==0<br/>signalShutdown
+    ShuttingDown --> [*]: release: context.close
+```
+
+### CLI argv → CaptureConfig flow
+
+```mermaid
+flowchart LR
+  argv["process.argv.slice(2)"] --> parse["parseCliArgs<br/>(BOOLEAN_FLAGS aware)"]
+  parse --> build["buildInvocation<br/>(URL check + list/integer parsers)"]
+  build --> over["CaptureConfigOverrides"]
+  over --> live["CaptureConfigLive(overrides)<br/>= Layer.succeed(CaptureConfigTag, …)"]
+  live --> svc["UICaptureService.Default<br/>(consumes CaptureConfigTag)"]
+  svc --> cap["service.captureWebsite(url)"]
+```
+
 ## Why
 
 - **Real WebP**, not JPEG-with-a-`.webp`-extension.
@@ -210,6 +267,38 @@ const program = Effect.gen(function* () {
   Effect.provide(CaptureConfigLive({ outputDir: "./out" })),
 );
 ```
+
+### Error type hierarchy
+
+```mermaid
+classDiagram
+    class TaggedError {
+        <<Effect schema>>
+        +_tag: string
+    }
+    class BrowserError {
+        +_tag: "BrowserError"
+        +message: string
+        +cause: unknown
+    }
+    class CaptureError {
+        +_tag: "CaptureError"
+        +url: string
+        +message: string
+        +cause: unknown
+    }
+    class FileSystemError {
+        +_tag: "FileSystemError"
+        +path: string
+        +operation: string
+        +cause: unknown
+    }
+    TaggedError <|-- BrowserError
+    TaggedError <|-- CaptureError
+    TaggedError <|-- FileSystemError
+```
+
+All three errors are `S.TaggedError` subclasses, so they discriminate cleanly under `Effect.catchTag` / `Effect.catchTags`.
 
 ## Configuration reference
 
