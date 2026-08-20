@@ -100,3 +100,18 @@ describe("createCaptureConfig", () => {
 		expect(cfg.screenshotHideSelectors).toEqual([...hide]);
 	});
 });
+
+describe("createCaptureConfig launchArgs", () => {
+	it("defaults to no extra launch args", () => {
+		expect(createCaptureConfig().launchArgs).toEqual([]);
+	});
+
+	it("carries extra Chromium flags through as a mutable copy", () => {
+		const input = ["--enable-blink-features=CanvasDrawElement"] as const;
+		const cfg = createCaptureConfig({ launchArgs: input });
+		expect(cfg.launchArgs).toEqual([
+			"--enable-blink-features=CanvasDrawElement",
+		]);
+		expect(cfg.launchArgs).not.toBe(input);
+	});
+});

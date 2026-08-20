@@ -71,3 +71,28 @@ describe("parseArgs", () => {
 		expect(result.options).toEqual({});
 	});
 });
+
+describe("parseArgs valueFlags", () => {
+	it("consumes a value that itself starts with -- when the flag is declared value-taking", () => {
+		const parsed = parseArgs(
+			["--launch-args", "--enable-blink-features=CanvasDrawElement"],
+			[],
+			["launch-args"],
+		);
+		expect(parsed.options["launch-args"]).toBe(
+			"--enable-blink-features=CanvasDrawElement",
+		);
+		expect(parsed.positional).toEqual([]);
+	});
+
+	it("still treats a value-taking flag with no following token as a boolean", () => {
+		const parsed = parseArgs(["--launch-args"], [], ["launch-args"]);
+		expect(parsed.options["launch-args"]).toBe(true);
+	});
+
+	it("leaves undeclared flags on the existing do-not-consume-a-flag behavior", () => {
+		const parsed = parseArgs(["--wait", "--video"], ["video"]);
+		expect(parsed.options.wait).toBe(true);
+		expect(parsed.options.video).toBe(true);
+	});
+});

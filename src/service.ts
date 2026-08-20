@@ -44,6 +44,16 @@ import {
 import { captureVideoForViewport } from "./video.js";
 import { performWarmupScroll } from "./warmup.js";
 
+/**
+ * Baseline Chromium switches. These keep the browser usable inside containers
+ * and CI sandboxes; anything beyond them comes from `config.launchArgs`.
+ */
+const DEFAULT_LAUNCH_ARGS = [
+	"--no-sandbox",
+	"--disable-setuid-sandbox",
+	"--disable-dev-shm-usage",
+] as const;
+
 export class CaptureConfigTag extends Context.Tag("CaptureConfig")<
 	CaptureConfigTag,
 	CaptureConfig
@@ -99,11 +109,8 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 					await fs.mkdir(cfg.outputDir, { recursive: true });
 					browser = await chromium.launch({
 						headless: true,
-						args: [
-							"--no-sandbox",
-							"--disable-setuid-sandbox",
-							"--disable-dev-shm-usage",
-						],
+						// Caller-supplied switches come last so they win on conflict.
+						args: [...DEFAULT_LAUNCH_ARGS, ...cfg.launchArgs],
 					});
 					console.log("✓ Browser initialized");
 					return browser;

@@ -76,6 +76,7 @@ const CaptureConfigFields = {
 	screenshotHideSelectors: S.Array(S.String),
 	ffmpegPath: S.String,
 	warmupScroll: S.Boolean,
+	launchArgs: S.Array(S.String),
 };
 
 export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
@@ -99,6 +100,7 @@ export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
 		screenshotHideSelectors: [],
 		ffmpegPath: "ffmpeg",
 		warmupScroll: true,
+		launchArgs: [],
 	});
 }
 
@@ -148,6 +150,7 @@ export type CaptureConfigOverrides = Partial<{
 	screenshotHideSelectors: ReadonlyArray<string>;
 	ffmpegPath: string;
 	warmupScroll: boolean;
+	launchArgs: ReadonlyArray<string>;
 }>;
 
 const toViewportInstance = (viewport: ViewportConfigInput): ViewportConfig =>
@@ -195,5 +198,8 @@ export const createCaptureConfig = (
 			: base.screenshotHideSelectors,
 		ffmpegPath: overrides.ffmpegPath ?? base.ffmpegPath,
 		warmupScroll: overrides.warmupScroll ?? base.warmupScroll,
+		launchArgs: overrides.launchArgs
+			? Array.from(overrides.launchArgs)
+			: base.launchArgs,
 	});
 };
