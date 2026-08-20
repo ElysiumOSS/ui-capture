@@ -20,13 +20,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/prepare
       - run: bun run build
-      - name: Set up npm auth
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+      # Publishes to npmjs via trusted publishing (OIDC) — no NPM_TOKEN. The
+      # `id-token: write` permission below is what makes it work, and npm must
+      # have a Trusted Publisher configured for this repo pointing at
+      # `release.yml`. Provenance is generated automatically, so `.release-it.json`
+      # does not pass `--provenance`.
       - uses: JoshuaKGoldberg/release-it-action@v0.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish to GitHub Packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
