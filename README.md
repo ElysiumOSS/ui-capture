@@ -164,6 +164,9 @@ Options:
   --no-interactions           Disable scripted scrolling during video
   --no-warmup                 Skip the pre-screenshot warm-up scroll
   --ffmpeg <path>             ffmpeg binary path (default: ffmpeg)
+  --launch-args <args>        Extra Chromium switches, whitespace separated
+                              (e.g. to enable an experimental web platform
+                              feature the captured page depends on)
   --help                      Show this message
 
 Examples:
@@ -320,6 +323,7 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 | `screenshotHideSelectors`   | `--hide`                | `string[]` (CSS selectors) | `[]`                               | Hidden via injected `visibility:hidden` style during capture. |
 | `menuInteractionSelectors`  | `--menu-selectors`      | `string[]`                 | `[]`                               | Clicked before link discovery for collapsed nav menus. |
 | `ffmpegPath`                | `--ffmpeg`              | `string`                   | `"ffmpeg"`                         | Absolute path or anything on `PATH`. |
+| `launchArgs`                | `--launch-args`         | `string[]`                 | `[]`                               | Appended after the baseline switches so they win on conflict; the CLI value splits on whitespace rather than commas, since one switch may itself contain commas. |
 
 `(¬)` means the CLI flag *negates* the default — e.g. `--no-warmup` sets `warmupScroll: false`.
 
@@ -374,6 +378,16 @@ type CaptureReport = {
   Disable with `--no-warmup` if it interferes with state-machine sites.
 - **Parallax** — true scroll-progress-driven parallax (pinned + transformed elements) renders at scroll=0 once warm-up returns to top.
   A stitched-capture mode for that case is on the roadmap.
+- **Experimental web platform features** — the baseline launch switches are only `--no-sandbox`, `--disable-setuid-sandbox` and `--disable-dev-shm-usage`.
+  A page whose visuals depend on a flagged API renders its *fallback* under those defaults, and the capture succeeds while silently showing the wrong thing.
+  Pass the flag explicitly:
+
+  ```bash
+  ui-capture http://localhost:3000 \
+    --launch-args "--enable-blink-features=CanvasDrawElement --use-gl=angle --use-angle=swiftshader"
+  ```
+
+  Shader-driven effects also need a GL backend: headless Chromium has no GPU, so `--use-gl=angle --use-angle=swiftshader` is usually required alongside the feature flag.
 - **Headless cleanup** — every browser context is closed in `Effect.acquireUseRelease` releases, so partial failures don't leak Chromium processes.
 - **`provenance: true`** — npm publishes are signed with GitHub Actions OIDC; verify with `npm audit signatures`.
 

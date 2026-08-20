@@ -195,3 +195,42 @@ describe("buildInvocation", () => {
 		expect(inv.overrides.routeConcurrency).toBe(4);
 	});
 });
+
+describe("buildInvocation --launch-args", () => {
+	it("omits launchArgs when the flag is absent", () => {
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.overrides.launchArgs).toBeUndefined();
+	});
+
+	it("splits a whitespace-separated flag string into individual args", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--launch-args",
+				"--enable-blink-features=CanvasDrawElement --use-gl=angle",
+			]),
+		);
+		expect(inv.overrides.launchArgs).toEqual([
+			"--enable-blink-features=CanvasDrawElement",
+			"--use-gl=angle",
+		]);
+	});
+
+	it("preserves commas inside a single Chromium flag value", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--launch-args=--enable-blink-features=CanvasDrawElement,CanvasPlaceElement",
+			]),
+		);
+		expect(inv.overrides.launchArgs).toEqual([
+			"--enable-blink-features=CanvasDrawElement,CanvasPlaceElement",
+		]);
+	});
+});
+
+describe("USAGE launch args", () => {
+	it("documents --launch-args", () => {
+		expect(USAGE).toContain("--launch-args");
+	});
+});

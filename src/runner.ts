@@ -29,6 +29,12 @@ const BOOLEAN_FLAGS = [
 	"include-subdomains",
 ];
 
+/**
+ * Options whose value is allowed to look like a flag. Chromium switches start
+ * with `--`, so the parser has to be told not to mistake them for options.
+ */
+const VALUE_FLAGS = ["launch-args"];
+
 export const USAGE = `Usage: ui-capture <url> [options]
 
 Crawl a website and capture full-page screenshots (PNG/WebP/JPEG) and
@@ -55,12 +61,16 @@ Options:
                               (warm-up triggers lazy-load + scroll-reveal
                               animations so screenshots capture real content)
   --ffmpeg <path>             ffmpeg binary path (default: ffmpeg)
+  --launch-args <args>        Extra Chromium switches, whitespace separated
+                              (e.g. to enable an experimental web platform
+                              feature the captured page depends on)
   --help                      Show this message
 
 Examples:
   ui-capture https://example.com
   ui-capture https://example.com --video --max-depth 1 --concurrency 4
   ui-capture https://example.com --viewports desktop:1920x1080,mobile:390x844
+  ui-capture https://example.com --launch-args "--enable-blink-features=CanvasDrawElement"
 `;
 
 export const printUsage = (): void => {
@@ -73,6 +83,16 @@ const parseList = (value: unknown): string[] | undefined => {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+	return items.length > 0 ? items : undefined;
+};
+
+/**
+ * Chromium switches are whitespace separated rather than comma separated: a
+ * single switch may itself contain commas (`--enable-blink-features=A,B`).
+ */
+const parseLaunchArgs = (value: unknown): string[] | undefined => {
+	if (typeof value !== "string") return undefined;
+	const items = value.split(/\s+/).filter(Boolean);
 	return items.length > 0 ? items : undefined;
 };
 
@@ -179,11 +199,14 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 		overrides.ffmpegPath = opts.ffmpeg;
 	}
 
+	const launchArgs = parseLaunchArgs(opts["launch-args"]);
+	if (launchArgs) overrides.launchArgs = launchArgs;
+
 	return { url, overrides };
 };
 
 export const parseCliArgs = (argv: readonly string[]): ParsedArgs =>
-	parseArgs([...argv], BOOLEAN_FLAGS);
+	parseArgs([...argv], BOOLEAN_FLAGS, VALUE_FLAGS);
 
 export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
 	const parsed = parseCliArgs(argv);
