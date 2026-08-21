@@ -29,6 +29,33 @@ jobs:
       # release-it-action must be >=v0.4.0: v0.3.5 and earlier call
       # getRequiredTokenInput("npm-token") and throw before release-it runs,
       # so they cannot publish without a token.
+      # Pre-flight for trusted publishing. Without this, a GitHub-side OIDC
+      # problem and an npm-side trust problem both surface as a bare ENEEDAUTH
+      # from `npm publish`, after a full build, with nothing to tell them apart.
+      # Prints only non-secret claims — never the token itself.
+      - name: Verify OIDC is available
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::No OIDC token endpoint exposed to this job. Check that the workflow grants 'id-token: write' and that org policy does not strip it."
+            exit 1
+          fi
+          token=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
+            | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).value))')
+          if [ -z "$token" ]; then
+            echo "::error::OIDC endpoint reachable but returned no token."
+            exit 1
+          fi
+          echo "OIDC token minted. Claims npm matches a Trusted Publisher against:"
+          node -e '
+            const [, payload] = process.argv[1].split(".");
+            const c = JSON.parse(Buffer.from(payload, "base64url").toString());
+            for (const k of ["aud", "repository", "repository_owner", "workflow_ref", "ref", "job_workflow_ref"]) {
+              console.log(`  ${k}: ${c[k]}`);
+            }
+          ' "$token"
       - uses: JoshuaKGoldberg/release-it-action@v0.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
