@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0](https://github.com/ElysiumOSS/ui-capture/compare/0.1.1...0.2.0) (2026-08-21)
+
+### Features
+
+* **config:** add launchArgs for extra Chromium switches ([d35aada](https://github.com/ElysiumOSS/ui-capture/commit/d35aada48f4e2772e3a527d7addbb92514af3f74))
+
 ## 0.1.1 (2026-04-28)
 
 ### Bug Fixes
