@@ -25,7 +25,11 @@ jobs:
       # have a Trusted Publisher configured for this repo pointing at
       # `release.yml`. Provenance is generated automatically, so `.release-it.json`
       # does not pass `--provenance`.
-      - uses: JoshuaKGoldberg/release-it-action@v0.3.2
+      #
+      # release-it-action must be >=v0.4.0: v0.3.5 and earlier call
+      # getRequiredTokenInput("npm-token") and throw before release-it runs,
+      # so they cannot publish without a token.
+      - uses: JoshuaKGoldberg/release-it-action@v0.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish to GitHub Packages
