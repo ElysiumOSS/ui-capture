@@ -162,6 +162,10 @@ Options:
   --video                     Capture videos in addition to screenshots
   --video-duration <ms>       Video duration when --video (default: 10000)
   --no-interactions           Disable scripted scrolling during video
+  --color-scheme <scheme>     prefers-color-scheme to report: light, dark, or
+                              no-preference (default: light). A site that
+                              follows the OS theme renders light under headless
+                              Chromium, so pass dark to capture its dark face.
   --no-warmup                 Skip the pre-screenshot warm-up scroll
   --ffmpeg <path>             ffmpeg binary path (default: ffmpeg)
   --launch-args <args>        Extra Chromium switches, whitespace separated
@@ -174,6 +178,7 @@ Examples:
   ui-capture https://example.com --video --max-depth 1 --concurrency 4
   ui-capture https://example.com --viewports desktop:1920x1080,mobile:390x844
   ui-capture https://example.com --hide ".cookie-banner,#chat-widget"
+  ui-capture https://example.com --color-scheme dark
 ```
 
 ## Library
@@ -322,6 +327,7 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 | `warmupScroll`              | `--no-warmup` (¬)       | `boolean`                  | `true`                             | Top→bottom→top scroll before each shot to trigger lazy loads. |
 | `screenshotHideSelectors`   | `--hide`                | `string[]` (CSS selectors) | `[]`                               | Hidden via injected `visibility:hidden` style during capture. |
 | `menuInteractionSelectors`  | `--menu-selectors`      | `string[]`                 | `[]`                               | Clicked before link discovery for collapsed nav menus. |
+| `colorScheme`               | `--color-scheme`        | `"light" \| "dark" \| "no-preference"` | `"light"`              | The `prefers-color-scheme` reported to the page, applied to both the screenshot and video contexts; the default matches Playwright's, so existing captures are unchanged. |
 | `ffmpegPath`                | `--ffmpeg`              | `string`                   | `"ffmpeg"`                         | Absolute path or anything on `PATH`. |
 | `launchArgs`                | `--launch-args`         | `string[]`                 | `[]`                               | Appended after the baseline switches so they win on conflict; the CLI value splits on whitespace rather than commas, since one switch may itself contain commas. |
 

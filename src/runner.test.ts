@@ -40,6 +40,28 @@ describe("parseCliArgs", () => {
 });
 
 describe("buildInvocation", () => {
+	it("leaves the color scheme unset so the default applies", () => {
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.overrides.colorScheme).toBeUndefined();
+	});
+
+	it("accepts each supported color scheme", () => {
+		for (const scheme of ["light", "dark", "no-preference"] as const) {
+			const inv = buildInvocation(
+				parseCliArgs(["https://example.com", "--color-scheme", scheme]),
+			);
+			expect(inv.overrides.colorScheme).toBe(scheme);
+		}
+	});
+
+	it("rejects a color scheme Playwright would not accept", () => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs(["https://example.com", "--color-scheme", "midnight"]),
+			),
+		).toThrow(/Invalid --color-scheme/);
+	});
+
 	const cwd = process.cwd();
 
 	it("rejects calls without a positional URL", () => {

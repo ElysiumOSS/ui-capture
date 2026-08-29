@@ -35,6 +35,8 @@ export interface CaptureVideoConfig {
 		readonly duration: number;
 		readonly interactions: boolean;
 	};
+	/** Must match the screenshot context, or a run's stills and video disagree. */
+	readonly colorScheme: "light" | "dark" | "no-preference";
 }
 
 export const captureVideoForViewport = (
@@ -66,6 +68,7 @@ export const captureVideoForViewport = (
 						},
 					},
 					viewport: { width: viewport.width, height: viewport.height },
+					colorScheme: cfg.colorScheme,
 				}),
 			catch: (error) =>
 				new CaptureError({

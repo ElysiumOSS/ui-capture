@@ -213,6 +213,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 														waitTime: cfg.waitTime,
 														ffmpegPath: cfg.ffmpegPath,
 														videoOptions: cfg.videoOptions,
+														colorScheme: cfg.colorScheme,
 													},
 												),
 											)
@@ -439,7 +440,10 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 											}
 											const browserRef = browser;
 											const context = yield* Effect.tryPromise({
-												try: () => browserRef.newContext(),
+												try: () =>
+													browserRef.newContext({
+														colorScheme: cfg.colorScheme,
+													}),
 												catch: (error) =>
 													new CaptureError({
 														url,
