@@ -1,6 +1,6 @@
 {
 	"name": "@elysiumoss/ui-capture",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Effect-based crawler that walks a website and captures full-page screenshots (PNG/WebP/JPEG) and optional multi-quality videos for every reachable internal route.",
 	"keywords": [
 		"capture",

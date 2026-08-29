@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0](https://github.com/ElysiumOSS/ui-capture/compare/0.2.0...0.3.0) (2026-08-29)
+
+### Features
+
+* add --color-scheme so themed sites can be captured as authored ([9ba4972](https://github.com/ElysiumOSS/ui-capture/commit/9ba497247a4953b5265cb1671289fca95d7951e7))
+
 ## [0.2.0](https://github.com/ElysiumOSS/ui-capture/compare/0.1.1...0.2.0) (2026-08-21)
 
 ### Features
