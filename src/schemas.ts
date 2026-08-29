@@ -77,6 +77,15 @@ const CaptureConfigFields = {
 	ffmpegPath: S.String,
 	warmupScroll: S.Boolean,
 	launchArgs: S.Array(S.String),
+	/**
+	 * The `prefers-color-scheme` the browser reports to the page.
+	 *
+	 * Defaults to `"light"`, matching Playwright, so existing captures are
+	 * unchanged. Sites that follow the OS theme render their light face under
+	 * headless Chromium regardless of what their authors see day to day, so
+	 * capturing such a site's dark face requires saying so explicitly.
+	 */
+	colorScheme: S.Literal("light", "dark", "no-preference"),
 };
 
 export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
@@ -101,6 +110,7 @@ export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
 		ffmpegPath: "ffmpeg",
 		warmupScroll: true,
 		launchArgs: [],
+		colorScheme: "light",
 	});
 }
 
@@ -151,6 +161,7 @@ export type CaptureConfigOverrides = Partial<{
 	ffmpegPath: string;
 	warmupScroll: boolean;
 	launchArgs: ReadonlyArray<string>;
+	colorScheme: "light" | "dark" | "no-preference";
 }>;
 
 const toViewportInstance = (viewport: ViewportConfigInput): ViewportConfig =>
@@ -201,5 +212,6 @@ export const createCaptureConfig = (
 		launchArgs: overrides.launchArgs
 			? Array.from(overrides.launchArgs)
 			: base.launchArgs,
+		colorScheme: overrides.colorScheme ?? base.colorScheme,
 	});
 };

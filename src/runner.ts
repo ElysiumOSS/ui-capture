@@ -57,6 +57,10 @@ Options:
   --video                     Capture videos in addition to screenshots
   --video-duration <ms>       Video duration when --video (default: 10000)
   --no-interactions           Disable scripted scrolling during video
+  --color-scheme <scheme>     prefers-color-scheme to report: light, dark, or
+                              no-preference (default: light). A site that
+                              follows the OS theme renders light under headless
+                              Chromium, so pass dark to capture its dark face.
   --no-warmup                 Skip the pre-screenshot warm-up scroll
                               (warm-up triggers lazy-load + scroll-reveal
                               animations so screenshots capture real content)
@@ -70,6 +74,7 @@ Examples:
   ui-capture https://example.com
   ui-capture https://example.com --video --max-depth 1 --concurrency 4
   ui-capture https://example.com --viewports desktop:1920x1080,mobile:390x844
+  ui-capture https://example.com --color-scheme dark
   ui-capture https://example.com --launch-args "--enable-blink-features=CanvasDrawElement"
 `;
 
@@ -179,6 +184,20 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 
 	const menuSelectors = parseList(opts["menu-selectors"]);
 	if (menuSelectors) overrides.menuInteractionSelectors = menuSelectors;
+
+	const colorScheme = opts["color-scheme"];
+	if (colorScheme !== undefined) {
+		if (
+			colorScheme !== "light" &&
+			colorScheme !== "dark" &&
+			colorScheme !== "no-preference"
+		) {
+			throw new Error(
+				`Invalid --color-scheme "${String(colorScheme)}". Expected light, dark, or no-preference.`,
+			);
+		}
+		overrides.colorScheme = colorScheme;
+	}
 
 	if (opts.video === true) overrides.captureVideo = true;
 	if (opts["no-warmup"] === true) overrides.warmupScroll = false;
