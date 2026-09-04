@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/ElysiumOSS/ui-capture/compare/0.3.0...0.4.0) (2026-09-04)
+
+### Features
+
+* add scripted states so single-route apps get captured ([3836df7](https://github.com/ElysiumOSS/ui-capture/commit/3836df792efb950c5e6a8c8c4e5b76f333c897de))
+
+### Bug Fixes
+
+* **lint:** make knip able to report an export with no consumer ([8d6921b](https://github.com/ElysiumOSS/ui-capture/commit/8d6921b8c413035c8dfddc1d5696849ca276115f))
+* **report:** record a failed route instead of only logging it ([5ad07eb](https://github.com/ElysiumOSS/ui-capture/commit/5ad07eb49c90b783585f384555cee8e88edb392f))
+* **states:** correct the failure, origin, budget and resource models ([c459a78](https://github.com/ElysiumOSS/ui-capture/commit/c459a78b059dc1f3c8df09b9c60275ccecb4491d))
+* **states:** fail a state that captured nothing instead of reporting it captured ([ea338d4](https://github.com/ElysiumOSS/ui-capture/commit/ea338d4e77171a60f2a7444febcf5a7ef28b403f))
+
 ## [0.3.0](https://github.com/ElysiumOSS/ui-capture/compare/0.2.0...0.3.0) (2026-08-29)
 
 ### Features
