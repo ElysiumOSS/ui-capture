@@ -145,6 +145,38 @@ describe("resolveStateSteps", () => {
 		expect(child?.url).toBe("/console");
 	});
 
+	it("inherits allowVideoReplay alongside the steps that make it matter", () => {
+		// The child inherits the parent's `request` step, which is what
+		// suppresses video. Inheriting the step without its opt-out leaves the
+		// child unable to undo a decision it never made.
+		const resolved = resolveStateSteps(
+			parse([
+				{
+					name: "seeded",
+					allowVideoReplay: true,
+					steps: [{ kind: "request", method: "PUT", path: "/api/seed" }],
+				},
+				{
+					name: "seeded-editor",
+					extends: "seeded",
+					steps: [{ kind: "click", selector: "#edit" }],
+				},
+			]),
+		);
+		expect(resolved.get("seeded")?.allowVideoReplay).toBe(true);
+		expect(resolved.get("seeded-editor")?.allowVideoReplay).toBe(true);
+	});
+
+	it("leaves allowVideoReplay false when no state in the chain sets it", () => {
+		const resolved = resolveStateSteps(
+			parse([
+				{ name: "base", steps: [] },
+				{ name: "child", extends: "base", steps: [] },
+			]),
+		);
+		expect(resolved.get("child")?.allowVideoReplay).toBe(false);
+	});
+
 	it("lets a child override the inherited url", () => {
 		const resolved = resolveStateSteps(
 			parse([
@@ -210,7 +242,54 @@ describe("validateStates", () => {
 			hostMatchesFilters: (hostname) => hostname === "app.example.com",
 		});
 		expect(Exit.isSuccess(exit)).toBe(false);
-		expect(failureMessage(exit)).toContain("outside the allowed hosts");
+		expect(failureMessage(exit)).toContain("outside the allowed origins");
+	});
+
+	it("rejects an allowed host on a different port, because that is a different origin", () => {
+		const exit = runValidate({
+			states: parse([
+				{
+					name: "other-port",
+					url: "https://app.example.com:8443/x",
+					steps: [],
+				},
+			]),
+			hostMatchesFilters: (hostname) => hostname === "app.example.com",
+		});
+		expect(Exit.isSuccess(exit)).toBe(false);
+		expect(failureMessage(exit)).toContain("scheme + host + port");
+	});
+
+	it("rejects an allowed host on a downgraded scheme", () => {
+		const exit = runValidate({
+			states: parse([
+				{ name: "plain", url: "http://app.example.com/x", steps: [] },
+			]),
+			hostMatchesFilters: (hostname) => hostname === "app.example.com",
+		});
+		expect(Exit.isSuccess(exit)).toBe(false);
+		expect(failureMessage(exit)).toContain("outside the allowed origins");
+	});
+
+	it("accepts the seed's own port written explicitly", () => {
+		const exit = runValidate({
+			seedUrl: "http://localhost:5173/",
+			states: parse([
+				{ name: "same", url: "http://localhost:5173/console", steps: [] },
+			]),
+			hostMatchesFilters: (hostname) => hostname === "localhost",
+		});
+		expect(Exit.isSuccess(exit)).toBe(true);
+	});
+
+	it("accepts a default port written explicitly, since URL normalises it away", () => {
+		const exit = runValidate({
+			states: parse([
+				{ name: "explicit", url: "https://app.example.com:443/x", steps: [] },
+			]),
+			hostMatchesFilters: (hostname) => hostname === "app.example.com",
+		});
+		expect(Exit.isSuccess(exit)).toBe(true);
 	});
 
 	it("rejects a viewport filter naming a viewport that is not configured", () => {
@@ -262,7 +341,28 @@ describe("validateStates", () => {
 			hostMatchesFilters: (hostname) => hostname === "app.example.com",
 		});
 		expect(Exit.isSuccess(exit)).toBe(false);
-		expect(failureMessage(exit)).toContain("outside the allowed hosts");
+		expect(failureMessage(exit)).toContain("outside the allowed origins");
+	});
+
+	it("blocks a request that resolves to the allowed host on another port", () => {
+		const exit = runValidate({
+			states: parse([
+				{
+					name: "seed",
+					steps: [
+						{
+							kind: "request",
+							method: "POST",
+							path: "https://app.example.com:9000/api/seed",
+						},
+					],
+				},
+			]),
+			allowStateRequests: true,
+			hostMatchesFilters: (hostname) => hostname === "app.example.com",
+		});
+		expect(Exit.isSuccess(exit)).toBe(false);
+		expect(failureMessage(exit)).toContain("outside the allowed origins");
 	});
 
 	it("checks a request inherited through extends, not just a state's own steps", () => {
@@ -278,18 +378,135 @@ describe("validateStates", () => {
 });
 
 describe("filterStates", () => {
-	it("keeps ancestors so a filtered run still resolves", () => {
-		const states = parse([
-			{ name: "base", steps: [] },
-			{ name: "middle", extends: "base", steps: [] },
-			{ name: "leaf", extends: "middle", steps: [] },
+	/**
+	 * The previous assertion here was that the ancestors came back in the list
+	 * ("keeps ancestors so a filtered run still resolves"). That was the bug:
+	 * `--state-filter leaf` then captured `base` and `middle` as well, and re-ran
+	 * their steps. Resolution needs the ancestors; capture must not see them.
+	 */
+	const chainStates = () =>
+		parse([
+			{
+				name: "base",
+				url: "/console",
+				steps: [{ kind: "click", selector: "#b" }],
+			},
+			{
+				name: "middle",
+				extends: "base",
+				steps: [{ kind: "click", selector: "#m" }],
+			},
+			{
+				name: "leaf",
+				extends: "middle",
+				steps: [{ kind: "click", selector: "#l" }],
+			},
 			{ name: "unrelated", steps: [] },
 		]);
-		expect(filterStates(states, ["leaf"]).map((state) => state.name)).toEqual([
-			"base",
-			"middle",
-			"leaf",
+
+	it("returns only the named states, never the ancestors they resolve through", () => {
+		expect(
+			filterStates(chainStates(), ["leaf"]).map((state) => state.name),
+		).toEqual(["leaf"]);
+	});
+
+	it("folds the ancestors' steps and inherited url into the named state", () => {
+		const [leaf] = filterStates(chainStates(), ["leaf"]);
+		expect(leaf?.steps.map((step) => step.selector)).toEqual([
+			"#b",
+			"#m",
+			"#l",
 		]);
+		expect(leaf?.url).toBe("/console");
+		expect(leaf?.extends).toBeUndefined();
+	});
+
+	it("keeps the child's own url rather than the inherited one", () => {
+		const states = parse([
+			{ name: "base", url: "/a", steps: [] },
+			{ name: "child", extends: "base", url: "/b", steps: [] },
+		]);
+		expect(filterStates(states, ["child"])[0]?.url).toBe("/b");
+	});
+
+	it("carries the child's other fields through the flattening", () => {
+		const states = parse([
+			{ name: "base", steps: [] },
+			{
+				name: "child",
+				extends: "base",
+				description: "d",
+				precondition: "[data-x]",
+				viewports: ["desktop"],
+				timeoutMs: 1234,
+				allowVideoReplay: true,
+				steps: [],
+			},
+		]);
+		expect(filterStates(states, ["child"])[0]).toMatchObject({
+			description: "d",
+			precondition: "[data-x]",
+			viewports: ["desktop"],
+			timeoutMs: 1234,
+			allowVideoReplay: true,
+		});
+	});
+
+	it("carries the inherited allowVideoReplay, not just the child's own", () => {
+		// The flag and the `request` step that makes it matter travel together:
+		// the child inherits the seed step, so it has to inherit the opt-out
+		// too, or the same states file records video unfiltered and silently
+		// drops it under --state-filter.
+		const states = parse([
+			{
+				name: "seed",
+				allowVideoReplay: true,
+				steps: [{ kind: "request", method: "POST", path: "/api/seed" }],
+			},
+			{ name: "child", extends: "seed", steps: [] },
+		]);
+		const [child] = filterStates(states, ["child"]);
+		expect(child?.steps.some((step) => step.kind === "request")).toBe(true);
+		expect(child?.allowVideoReplay).toBe(true);
+	});
+
+	it("does not re-run an ancestor's request seed as a state of its own", () => {
+		const states = parse([
+			{
+				name: "seed",
+				steps: [{ kind: "request", method: "POST", path: "/api/seed" }],
+			},
+			{ name: "child", extends: "seed", steps: [] },
+		]);
+		const selected = filterStates(states, ["child"]);
+		expect(selected.map((state) => state.name)).toEqual(["child"]);
+		expect(
+			selected.flatMap((state) =>
+				state.steps.filter((step) => step.kind === "request"),
+			),
+		).toHaveLength(1);
+	});
+
+	it("still returns an ancestor when the ancestor is what was named", () => {
+		expect(
+			filterStates(chainStates(), ["base"]).map((state) => state.name),
+		).toEqual(["base"]);
+	});
+
+	it("returns file order and deduplicates a repeated name", () => {
+		expect(
+			filterStates(chainStates(), ["unrelated", "base", "base"]).map(
+				(state) => state.name,
+			),
+		).toEqual(["base", "unrelated"]);
+	});
+
+	it("propagates a broken chain, since a filtered run still has to resolve", () => {
+		const states = parse([
+			{ name: "a", extends: "b", steps: [] },
+			{ name: "b", extends: "a", steps: [] },
+		]);
+		expect(() => filterStates(states, ["a"])).toThrow(/extends cycle/);
 	});
 
 	it("throws on a name that matches nothing", () => {
@@ -448,6 +665,12 @@ describe("parseStatesFile — rejected shapes", () => {
 		);
 	});
 
+	it("rejects an empty viewports list, which would capture nothing", () => {
+		// A state with `viewports: []` used to decode, pass validation vacuously
+		// and be reported as captured with zero screenshots.
+		rejects([{ name: "a", steps: [], viewports: [] }], /states\.0\.viewports/);
+	});
+
 	it("rejects a whole-state timeout of zero", () => {
 		rejects([{ name: "a", steps: [], timeoutMs: 0 }], /states\.0\.timeoutMs/);
 	});
@@ -514,5 +737,78 @@ describe("parseStatesFile — accepted shapes", () => {
 		for (const kind of ["evaluate", "script", "js", "fn", "exec"]) {
 			expect(() => parse([{ name: "a", steps: [{ kind }] }])).toThrow();
 		}
+	});
+});
+
+describe("validateStates — inexpressible step shapes", () => {
+	// These abort the run rather than failing one state at a time. A shape that
+	// contradicts itself cannot start working on a retry, and finding out per
+	// state per viewport is four identical failures instead of one fixable
+	// message. `planStep` rejects them again at runtime, so a programmatic
+	// caller cannot route around this pass.
+	it("rejects minCount on a state that also passes when nothing matches", () => {
+		for (const state of ["hidden", "detached"]) {
+			const states = parse([
+				{
+					name: "fleet",
+					steps: [
+						{ kind: "waitFor", selector: ".fleet-row", state, minCount: 6 },
+					],
+				},
+			]);
+			const message = failureMessage(runValidate({ states }));
+			expect(message).toContain("step 0");
+			expect(message).toContain("minCount counts matching elements");
+			expect(message).toContain(state);
+		}
+	});
+
+	it("accepts minCount with visible and attached", () => {
+		for (const state of ["visible", "attached"]) {
+			const states = parse([
+				{
+					name: "fleet",
+					steps: [
+						{ kind: "waitFor", selector: ".fleet-row", state, minCount: 6 },
+					],
+				},
+			]);
+			expect(Exit.isSuccess(runValidate({ states }))).toBe(true);
+		}
+	});
+
+	it("rejects a timeoutMs on a press with no element to wait for", () => {
+		const states = parse([
+			{
+				name: "esc",
+				steps: [{ kind: "press", key: "Escape", timeoutMs: 9000 }],
+			},
+		]);
+		const message = failureMessage(runValidate({ states }));
+		expect(message).toContain("timeoutMs has no effect on an untargeted press");
+	});
+
+	it("leaves a targeted press with a timeoutMs alone", () => {
+		const states = parse([
+			{
+				name: "submit",
+				steps: [
+					{ kind: "press", key: "Enter", selector: "#form", timeoutMs: 9000 },
+				],
+			},
+		]);
+		expect(Exit.isSuccess(runValidate({ states }))).toBe(true);
+	});
+
+	it("checks inherited steps too, and names the index in the flattened script", () => {
+		const states = parse([
+			{ name: "base", steps: [{ kind: "click", selector: "#open" }] },
+			{
+				name: "child",
+				extends: "base",
+				steps: [{ kind: "press", key: "Escape", timeoutMs: 10 }],
+			},
+		]);
+		expect(failureMessage(runValidate({ states }))).toContain("step 1");
 	});
 });

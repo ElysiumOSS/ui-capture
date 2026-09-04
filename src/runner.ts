@@ -66,10 +66,22 @@ Options:
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
                               app's dialogs and workspaces get captured too.
-  --state-filter <a,b,...>    Run only these named states (default: all)
+  --state-filter <a,b,...>    Capture only these named states (default: all).
+                              A state they extend is replayed to reach them,
+                              and is not captured itself.
   --skip-routes               Capture only scripted states, not crawled routes
-  --state-timeout <ms>        Per-state budget covering navigation, script and
-                              capture (default: 30000; a state may override it)
+  --state-timeout <ms>        Budget for reaching a state: navigation,
+                              precondition probe and script. Screenshot and
+                              video capture are outside it (default: 60000;
+                              a state may override it with timeoutMs)
+  --precondition-timeout <ms> Budget for a state's precondition probe, which
+                              decides whether the state exists on this build
+                              at all (default: 10000; a state may override it
+                              with preconditionTimeoutMs). Raise it for an app
+                              whose first meaningful frame lands well after
+                              networkidle, such as a WebGL console — a probe
+                              that gives up first records the state as skipped
+                              rather than slow.
   --allow-state-requests      Permit request steps, which reach past the UI
                               into the app's own backend. Off by default: a
                               states file from a colleague should not be able
@@ -102,7 +114,7 @@ Examples:
   ui-capture http://localhost:5173 --states ./states.json --state-filter fleet-editor
 `;
 
-export const printUsage = (): void => {
+const printUsage = (): void => {
 	console.log(USAGE);
 };
 
@@ -260,6 +272,14 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 
 	const stateTimeout = parseInteger(opts["state-timeout"], "--state-timeout");
 	if (stateTimeout !== undefined) overrides.stateTimeout = stateTimeout;
+
+	const preconditionTimeout = parseInteger(
+		opts["precondition-timeout"],
+		"--precondition-timeout",
+	);
+	if (preconditionTimeout !== undefined) {
+		overrides.preconditionTimeout = preconditionTimeout;
+	}
 
 	const statesOpt = opts.states;
 	const statesPath =

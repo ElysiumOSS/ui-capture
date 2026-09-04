@@ -16,8 +16,10 @@ import type { Page } from "playwright";
 import { describe, expect, it, vi } from "vitest";
 import type { StateCaptureError } from "./errors.js";
 import {
+	CaptureConfig,
 	type CaptureStep,
 	CaptureStep as CaptureStepSchema,
+	DEFAULT_PRECONDITION_TIMEOUT_MS,
 } from "./schemas.js";
 import {
 	createScriptedStateRunner,
@@ -42,6 +44,16 @@ interface ElementBehaviour {
 	readonly counts?: readonly number[];
 	/** Per-index visibility; missing indices are visible. */
 	readonly visible?: readonly boolean[];
+	/** Delay each `isVisible()` answer, to make a counting pass slow. */
+	readonly visibleDelayMs?: number;
+	/** `count()` never settles at all. */
+	readonly countHangs?: boolean;
+	/**
+	 * `count()` rejects with this message — how a malformed selector behaves:
+	 * real Playwright rejects with "Unexpected token ... while parsing css
+	 * selector" whether or not any element would have matched.
+	 */
+	readonly countRejects?: string;
 	/** When set, the corresponding action rejects with this message. */
 	readonly waitFor?: string;
 	readonly click?: string;
@@ -104,8 +116,14 @@ const createFakePage = (
 			return failure ? reject(failure) : Promise.resolve();
 		},
 		isVisible: () => {
-			const visible = behaviourFor(selector).visible?.[index] ?? true;
-			return Promise.resolve(visible);
+			const behaviour = behaviourFor(selector);
+			const visible = behaviour.visible?.[index] ?? true;
+			calls.push({ op: "isVisible", selector, index, visible });
+			return behaviour.visibleDelayMs === undefined
+				? Promise.resolve(visible)
+				: new Promise<boolean>((resolve) =>
+						setTimeout(() => resolve(visible), behaviour.visibleDelayMs),
+					);
 		},
 	});
 
@@ -114,6 +132,14 @@ const createFakePage = (
 		nth: (index: number) => element(selector, index),
 		count: () => {
 			const behaviour = behaviourFor(selector);
+			if (behaviour.countHangs) {
+				calls.push({ op: "count", selector, hung: true });
+				return new Promise<number>(() => {});
+			}
+			if (behaviour.countRejects) {
+				calls.push({ op: "count", selector, rejected: behaviour.countRejects });
+				return reject(behaviour.countRejects);
+			}
 			if (behaviour.counts) {
 				const cursor = pollCursor.get(selector) ?? 0;
 				pollCursor.set(selector, cursor + 1);
@@ -601,26 +627,69 @@ describe("runStateScript — sequencing and progress", () => {
 			index: 2,
 			kind: "waitFor",
 			target: ".fleet-row",
+			phase: "step",
 		});
 	});
 
 	it("starts from a whole-state progress marker before any step runs", async () => {
-		const { page } = createFakePage();
-		const { progress } = await run(page, []);
-		expect(progress).toEqual(INITIAL_STEP_PROGRESS);
 		expect(INITIAL_STEP_PROGRESS.index).toBe(-1);
 		expect(INITIAL_STEP_PROGRESS.kind).toBe("state");
+		expect(INITIAL_STEP_PROGRESS.phase).toBe("navigate");
+	});
+
+	it("marks the script done rather than leaving the last step named", async () => {
+		// Updated with the phase field: an empty script *completes*, so leaving
+		// the ref on the pre-navigation marker would have the whole-state
+		// timeout report a state that finished its script as still navigating.
+		const { page } = createFakePage();
+		const { progress } = await run(page, []);
+		expect(progress).toEqual({ ...INITIAL_STEP_PROGRESS, phase: "done" });
+	});
+
+	it("names the last step as settling, not running, during its settleMs", async () => {
+		// The off-by-one this closes: the ref still named step 0 for the whole
+		// of its settle delay, so a budget that expired there blamed a step
+		// that had already succeeded.
+		const { page } = createFakePage();
+		const runner = createScriptedStateRunner();
+		const progress = Effect.runSync(Ref.make(INITIAL_STEP_PROGRESS));
+		await Effect.runPromiseExit(
+			runner
+				.runStateScript(
+					page,
+					"demo",
+					[decodeStep({ kind: "click", selector: "#a", settleMs: 5000 })],
+					progress,
+				)
+				.pipe(Effect.timeout(50)),
+		);
+		expect(Effect.runSync(Ref.get(progress))).toEqual({
+			index: 0,
+			kind: "click",
+			target: "#a",
+			phase: "settle",
+		});
 	});
 });
 
 describe("checkPrecondition", () => {
-	it("is true when the selector is present", async () => {
+	it("evaluates the selector before it starts waiting on it", async () => {
+		// The `count()` is not incidental: it is the whole discriminator. A
+		// malformed selector rejects there whether or not an element would have
+		// matched, which is what separates "not present here" from "this
+		// selector is broken" without any page-side evaluation.
 		const { page, calls } = createFakePage();
 		const runner = createScriptedStateRunner({ preconditionTimeoutMs: 1234 });
 		await expect(
-			Effect.runPromise(runner.checkPrecondition(page, "[data-advanced]")),
+			Effect.runPromise(
+				runner.checkPrecondition(page, "demo", "[data-advanced]"),
+			),
 		).resolves.toBe(true);
 		expect(calls[0]).toMatchObject({
+			op: "count",
+			selector: "[data-advanced]",
+		});
+		expect(calls[1]).toMatchObject({
 			op: "waitFor",
 			state: "visible",
 			timeout: 1234,
@@ -631,11 +700,282 @@ describe("checkPrecondition", () => {
 		// "This state does not exist here" is a different event from "this
 		// state's script is broken", and only the second is a failure.
 		const { page } = createFakePage({
-			elements: { "[data-advanced]": { waitFor: "Timeout" } },
+			elements: { "[data-advanced]": { waitFor: "Timeout 50ms exceeded." } },
 		});
 		const runner = createScriptedStateRunner({ preconditionTimeoutMs: 50 });
 		await expect(
-			Effect.runPromise(runner.checkPrecondition(page, "[data-advanced]")),
+			Effect.runPromise(
+				runner.checkPrecondition(page, "demo", "[data-advanced]"),
+			),
 		).resolves.toBe(false);
+	});
+
+	it("fails the state when the selector cannot be evaluated at all", async () => {
+		// The failure this exists to prevent: a typo'd selector answering "not
+		// present here", the state skipping, and the run going green having
+		// captured nothing.
+		const { page } = createFakePage({
+			elements: {
+				"##typo": {
+					countRejects:
+						'locator.count: Unexpected token "#" while parsing css selector "##typo".',
+				},
+			},
+		});
+		const runner = createScriptedStateRunner({ preconditionTimeoutMs: 50 });
+		const exit = await Effect.runPromiseExit(
+			runner.checkPrecondition(page, "demo", "##typo"),
+		);
+		const error = failureOf(exit as Exit.Exit<void, StateCaptureError>);
+		expect(error._tag).toBe("StateCaptureError");
+		expect(error.stepKind).toBe("precondition");
+		expect(error.stepIndex).toBe(-1);
+		expect(error.target).toBe("##typo");
+		expect(error.message).toContain("could not evaluate its precondition");
+		expect(error.message).toContain("while parsing css selector");
+	});
+
+	it("fails, rather than skipping, when the wait dies for a non-timeout reason", async () => {
+		const { page } = createFakePage({
+			elements: {
+				"[data-advanced]": {
+					waitFor: "Target page, context or browser has been closed",
+				},
+			},
+		});
+		const runner = createScriptedStateRunner({ preconditionTimeoutMs: 50 });
+		const exit = await Effect.runPromiseExit(
+			runner.checkPrecondition(page, "demo", "[data-advanced]"),
+		);
+		expect(
+			failureOf(exit as Exit.Exit<void, StateCaptureError>).message,
+		).toContain("has been closed");
+	});
+
+	it("lets a state override the run's probe budget", async () => {
+		const { page, calls } = createFakePage();
+		const runner = createScriptedStateRunner({ preconditionTimeoutMs: 1000 });
+		await Effect.runPromise(
+			runner.checkPrecondition(page, "demo", "[data-advanced]", 25000),
+		);
+		expect(callsOfKind(calls, "waitFor")[0]).toMatchObject({ timeout: 25000 });
+	});
+
+	it("falls back to the shared default when nothing configures it", async () => {
+		// Ten seconds, not five: the probe runs after `networkidle`, which is a
+		// network fact rather than a rendering one, and an app that reaches its
+		// first meaningful frame later than the probe is reported as *absent*.
+		const { page, calls } = createFakePage();
+		await Effect.runPromise(
+			createScriptedStateRunner({}).checkPrecondition(
+				page,
+				"demo",
+				"[data-advanced]",
+			),
+		);
+		expect(callsOfKind(calls, "waitFor")[0]).toMatchObject({
+			timeout: DEFAULT_PRECONDITION_TIMEOUT_MS,
+		});
+		// The config default and the driver fallback are the same constant; this
+		// is what stops them drifting apart in opposite directions.
+		expect(CaptureConfig.Default.preconditionTimeout).toBe(
+			DEFAULT_PRECONDITION_TIMEOUT_MS,
+		);
+	});
+});
+
+describe("runStateScript — the request host gate", () => {
+	it("judges the URL the step resolves to against the live page, not the configured one", async () => {
+		// The bypass this closes: a script navigates somewhere else first, so a
+		// relative path resolves against an origin the pre-launch check never
+		// saw. The gate has to run where the resolution happens.
+		const { page } = createFakePage({ url: "https://evil.test/landing" });
+		const { exit } = await run(
+			page,
+			[{ kind: "request", method: "POST", path: "/api/seed" }],
+			{ isAllowedRequestUrl: (url) => url.hostname === "app.example.com" },
+		);
+		const error = failureOf(exit);
+		expect(error.stepKind).toBe("request");
+		expect(error.target).toBe("POST /api/seed");
+		expect(error.message).toContain("https://evil.test/api/seed");
+		expect(error.message).toContain("outside the allowed origins");
+	});
+
+	it("sends nothing when the gate rejects", async () => {
+		const { page, calls } = createFakePage({
+			url: "https://evil.test/landing",
+		});
+		await run(
+			page,
+			[{ kind: "request", method: "DELETE", path: "/api/fleet" }],
+			{
+				isAllowedRequestUrl: (url) => url.hostname === "app.example.com",
+			},
+		);
+		expect(callsOfKind(calls, "request")).toHaveLength(0);
+	});
+
+	it("allows a request the gate accepts", async () => {
+		const { page, calls } = createFakePage({
+			url: "https://app.example.com/console",
+		});
+		const { exit } = await run(
+			page,
+			[{ kind: "request", method: "GET", path: "/api/ping" }],
+			{ isAllowedRequestUrl: (url) => url.hostname === "app.example.com" },
+		);
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(callsOfKind(calls, "request")).toHaveLength(1);
+	});
+
+	it("does not widen to another port on an allowed host", async () => {
+		// The reason the gate takes a URL rather than a hostname: the pre-launch
+		// pass compares scheme, host *and* port, so a script that navigates to
+		// another port on the same host must not be able to reach a backend the
+		// validated file could not.
+		const { page, calls } = createFakePage({
+			url: "https://app.example.com:9000/console",
+		});
+		const { exit } = await run(
+			page,
+			[{ kind: "request", method: "POST", path: "/api/seed" }],
+			{
+				isAllowedRequestUrl: (url) => url.origin === "https://app.example.com",
+			},
+		);
+		expect(failureOf(exit).message).toContain("outside the allowed origins");
+		expect(callsOfKind(calls, "request")).toHaveLength(0);
+	});
+
+	it("falls back to the page's own origin when no gate is configured", async () => {
+		// Fail closed. A caller that forgets to pass a filter gets the property
+		// the `path` form is supposed to guarantee, not an open door.
+		const { page, calls } = createFakePage({
+			url: "https://app.example.com/console",
+		});
+		const { exit } = await run(page, [
+			{ kind: "request", method: "POST", path: "https://other.test/api/seed" },
+		]);
+		expect(failureOf(exit).message).toContain("outside the allowed origins");
+		expect(callsOfKind(calls, "request")).toHaveLength(0);
+	});
+
+	it("denies everything when the page URL will not parse", async () => {
+		// about:blank and friends: nothing to be same-origin with, so nothing is.
+		const { page, calls } = createFakePage({ url: "about:blank" });
+		const { exit } = await run(page, [
+			{ kind: "request", method: "GET", path: "https://app.example.com/api" },
+		]);
+		expect(failureOf(exit).message).toContain("outside the allowed origins");
+		expect(callsOfKind(calls, "request")).toHaveLength(0);
+	});
+});
+
+describe("runStateScript — inexpressible step shapes", () => {
+	it("refuses minCount with a state that also passes on no match", async () => {
+		for (const state of ["hidden", "detached"] as const) {
+			const { page, calls } = createFakePage();
+			const { exit } = await run(page, [
+				{ kind: "waitFor", selector: ".row", state, minCount: 3 },
+			]);
+			const error = failureOf(exit);
+			expect(error.stepKind).toBe("waitFor");
+			expect(error.message).toContain("minCount counts matching elements");
+			expect(error.message).toContain(`state "${state}"`);
+			// Refused, not attempted with one of the two meanings guessed at.
+			expect(calls).toEqual([]);
+		}
+	});
+
+	it("still allows minCount with visible and attached", async () => {
+		for (const state of ["visible", "attached"] as const) {
+			const { page } = createFakePage({ elements: { ".row": { count: 4 } } });
+			const { exit } = await run(page, [
+				{ kind: "waitFor", selector: ".row", state, minCount: 3 },
+			]);
+			expect(Exit.isSuccess(exit)).toBe(true);
+		}
+	});
+
+	it("refuses a timeoutMs on a press that has no element to wait for", async () => {
+		const { page, calls } = createFakePage();
+		const { exit } = await run(page, [
+			{ kind: "press", key: "Escape", timeoutMs: 9000 },
+		]);
+		const error = failureOf(exit);
+		expect(error.stepKind).toBe("press");
+		expect(error.message).toContain("timeoutMs has no effect on an untargeted");
+		expect(calls).toEqual([]);
+	});
+
+	it("leaves an untargeted press without a timeout alone", async () => {
+		const { page, calls } = createFakePage();
+		const { exit } = await run(page, [{ kind: "press", key: "Escape" }], {
+			defaultStepTimeoutMs: 9000,
+		});
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(calls).toEqual([{ op: "keyboard.press", key: "Escape" }]);
+	});
+
+	it("keeps honouring timeoutMs on a targeted press", async () => {
+		const { page, calls } = createFakePage();
+		await run(page, [
+			{ kind: "press", key: "Enter", selector: "#form", timeoutMs: 900 },
+		]);
+		expect(calls[0]).toMatchObject({ op: "press", timeout: 900 });
+	});
+});
+
+describe("runStateScript — a counting pass respects its own deadline", () => {
+	it("stops inspecting matches once the step's timeout has passed", async () => {
+		// A pass that began inside the budget must not run on past it: one round
+		// trip per match means a selector matching enough elements would
+		// otherwise outlive the step timeout entirely.
+		const { page, calls } = createFakePage({
+			elements: { ".row": { count: 40, visibleDelayMs: 20 } },
+		});
+		const started = Date.now();
+		const { exit } = await run(page, [
+			{ kind: "waitFor", selector: ".row", minCount: 40, timeoutMs: 120 },
+		]);
+		const elapsed = Date.now() - started;
+		const error = failureOf(exit);
+		expect(error.message).toContain("the step deadline passed");
+		expect(error.message).toContain("of 40 checked");
+		// 40 × 20ms is 800ms of inspection; the deadline is 120ms.
+		expect(elapsed).toBeLessThan(500);
+		expect(callsOfKind(calls, "isVisible").length).toBeLessThan(40);
+	});
+
+	it("gives up on a page call that never settles at all", async () => {
+		// No in-loop deadline can reach a promise that never resolves, so the
+		// counting pass carries a hard backstop; without it the step outlives
+		// its own timeout and eats the whole-state budget instead.
+		const { page } = createFakePage({
+			elements: { ".row": { countHangs: true } },
+		});
+		const started = Date.now();
+		const { exit } = await run(page, [
+			{ kind: "waitFor", selector: ".row", minCount: 1, timeoutMs: 100 },
+		]);
+		const error = failureOf(exit);
+		expect(error.stepKind).toBe("waitFor");
+		expect(error.message).toContain("never settled");
+		expect(Date.now() - started).toBeLessThan(3000);
+	});
+
+	it("still reports the last count taken while the step could run", async () => {
+		// The deadline check must not degrade the message into "found 0": the
+		// count worth reading is the last one taken inside the budget.
+		const { page } = createFakePage({
+			elements: { ".row": { count: 4, visible: [true, false, false, true] } },
+		});
+		const { exit } = await run(page, [
+			{ kind: "waitFor", selector: ".row", minCount: 3, timeoutMs: 150 },
+		]);
+		expect(failureOf(exit).message).toContain(
+			'expected >=3 matching "visible", found 2',
+		);
 	});
 });

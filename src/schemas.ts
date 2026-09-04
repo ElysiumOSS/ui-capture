@@ -202,14 +202,33 @@ export class CaptureState extends S.Class<CaptureState>("CaptureState")({
 	 * A selector probed on the fresh load, before any step. When it is absent,
 	 * the state is recorded as `skipped` rather than `failed`: "this state does
 	 * not exist here" is a different event from "this state's script is broken".
+	 *
+	 * A selector that cannot be *evaluated* — a typo, a malformed CSS — is
+	 * neither: the state fails, because a probe that silently answers "not here"
+	 * to a broken selector produces a green run with nothing captured.
 	 */
 	precondition: S.optional(S.String),
+	/**
+	 * Budget for this state's `precondition` probe, overriding
+	 * `preconditionTimeout` for the run.
+	 *
+	 * Per state because readiness is not uniform: a state gated on a nav link
+	 * present at first paint should not wait as long as one gated on a WebGL
+	 * console's first frame, and a probe that gives up early reports the state
+	 * as *absent here* rather than slow.
+	 */
+	preconditionTimeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
 	/**
 	 * Restrict this state to named viewports. The script runs once and the
 	 * viewport loop resizes afterwards, so a dialog that unmounts below a
 	 * breakpoint would otherwise be screenshotted as the boot view.
+	 *
+	 * An empty array is rejected rather than treated as "none": it would
+	 * capture zero screenshots and still be reported as captured, and a state
+	 * that captured nothing must never report success. Omit the field to use
+	 * every configured viewport.
 	 */
-	viewports: S.optional(S.Array(S.String)),
+	viewports: S.optional(S.Array(S.String).pipe(S.minItems(1))),
 	steps: S.Array(CaptureStep),
 	/** Whole-state budget: navigation + script + capture. */
 	timeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
@@ -247,6 +266,15 @@ export class CaptureResult extends S.Class<CaptureResult>("CaptureResult")({
 	failedStepIndex: S.optional(S.Number.pipe(S.int())),
 	screenshots: S.Record({ key: S.String, value: ScreenshotPaths }),
 	videos: S.optional(S.Record({ key: S.String, value: VideoQualityPaths })),
+	/**
+	 * Per-viewport video failures on a capture whose screenshots landed.
+	 *
+	 * A failed recording does not un-write the stills that are already on
+	 * disk, so it is reported here rather than through `error`: the capture
+	 * stays a success and says what it lost, instead of discarding good work
+	 * and counting as a failure that produced nothing.
+	 */
+	videoErrors: S.optional(S.Array(S.String)),
 	error: S.optional(S.String),
 	timestamp: S.Number.pipe(S.int()),
 }) {}
@@ -264,6 +292,22 @@ export class VideoOptions extends S.Class<VideoOptions>("VideoOptions")(
 		interactions: true,
 	});
 }
+
+/**
+ * Default budget for a state's `precondition` probe.
+ *
+ * Generous on purpose. The probe runs after `goto` has settled, but "settled"
+ * is a network fact rather than a rendering one: an app that boots a WebGL
+ * scene, or hydrates and then fetches, reaches its first meaningful frame
+ * seconds later. A probe that gives up first reports the state as *not present
+ * here* — the one outcome that yields a green run with nothing captured. Ten
+ * seconds still sits well inside the whole-state budget, so a state that
+ * genuinely does not exist here skips cheaply instead of consuming it.
+ *
+ * Lives here rather than in the driver so the config default and the driver's
+ * own fallback cannot drift apart.
+ */
+export const DEFAULT_PRECONDITION_TIMEOUT_MS = 10000;
 
 const CaptureConfigFields = {
 	outputDir: S.String,
@@ -294,8 +338,29 @@ const CaptureConfigFields = {
 	 * without a states file behaves exactly as it always has.
 	 */
 	states: S.Array(CaptureState),
-	/** Default whole-state budget in ms; a state may override it. */
+	/**
+	 * Default budget in ms for *reaching* a state: navigation, the
+	 * `precondition` probe and the script. A state may override it.
+	 *
+	 * It deliberately stops there. Screenshot and video capture are bounded by
+	 * their own timeouts and by `videoOptions.duration` × viewport count, and
+	 * folding them in made the default unsatisfiable: a state captured with
+	 * `--video` could not fit a 30 s budget on any configuration, so every
+	 * state timed out. The default exceeds the 30 s navigation timeout so a
+	 * slow first load still leaves the script a budget to run in.
+	 */
 	stateTimeout: S.Number.pipe(S.int(), S.positive()),
+	/**
+	 * Budget for a state's `precondition` probe; a state may override it with
+	 * its own `preconditionTimeoutMs`.
+	 *
+	 * Separate from `stateTimeout`, and much smaller, because the two answer
+	 * different questions. The probe decides whether the state *exists here* at
+	 * all, and its cost is paid in full by every state that legitimately does
+	 * not — so it has to be long enough for a slow-booting app to reach first
+	 * paint, and short enough that a skip is not the run's dominant cost.
+	 */
+	preconditionTimeout: S.Number.pipe(S.int(), S.positive()),
 	/** Crawl and capture routes. `false` captures only scripted states. */
 	captureRoutes: S.Boolean,
 	/**
@@ -329,7 +394,8 @@ export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
 		launchArgs: [],
 		colorScheme: "light",
 		states: [],
-		stateTimeout: 30000,
+		stateTimeout: 60000,
+		preconditionTimeout: DEFAULT_PRECONDITION_TIMEOUT_MS,
 		captureRoutes: true,
 		allowStateRequests: false,
 	});
@@ -354,6 +420,8 @@ export class CaptureReport extends S.Class<CaptureReport>("CaptureReport")({
 			failedStepIndex: S.optional(S.Number.pipe(S.int())),
 			screenshots: S.Array(S.String),
 			hasVideo: S.Boolean,
+			/** Viewports whose video failed while their screenshots succeeded. */
+			videoErrors: S.optional(S.Array(S.String)),
 			error: S.optional(S.String),
 		}),
 	),
@@ -399,6 +467,7 @@ export type CaptureConfigOverrides = Partial<{
 	colorScheme: "light" | "dark" | "no-preference";
 	states: ReadonlyArray<CaptureStateInput>;
 	stateTimeout: number;
+	preconditionTimeout: number;
 	captureRoutes: boolean;
 	allowStateRequests: boolean;
 }>;
@@ -463,6 +532,8 @@ export const createCaptureConfig = (
 			: base.launchArgs,
 		colorScheme: overrides.colorScheme ?? base.colorScheme,
 		stateTimeout: overrides.stateTimeout ?? base.stateTimeout,
+		preconditionTimeout:
+			overrides.preconditionTimeout ?? base.preconditionTimeout,
 		captureRoutes: overrides.captureRoutes ?? base.captureRoutes,
 		allowStateRequests: overrides.allowStateRequests ?? base.allowStateRequests,
 	});

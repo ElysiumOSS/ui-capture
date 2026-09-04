@@ -17,10 +17,12 @@ import {
 	COUNT_POLL_INTERVAL_MS,
 	DEFAULT_STEP_TIMEOUT_MS,
 	describeStep,
+	isCountableState,
 	isExpectedStatus,
 	planStep,
 	resolveRequestUrl,
 	StepPlanError,
+	stepShapeError,
 } from "./state-plan.js";
 
 const decodeStep = S.decodeUnknownSync(CaptureStep);
@@ -252,5 +254,193 @@ describe("isExpectedStatus", () => {
 	it("demands an exact match when expectStatus is set", () => {
 		expect(isExpectedStatus(201, 201)).toBe(true);
 		expect(isExpectedStatus(200, 201)).toBe(false);
+	});
+});
+
+describe("stepShapeError", () => {
+	it("passes every shape the vocabulary can actually carry out", () => {
+		const fine = [
+			{ kind: "waitFor", selector: ".row", minCount: 3 },
+			{ kind: "waitFor", selector: ".row", state: "attached", minCount: 3 },
+			{ kind: "waitFor", selector: ".row", state: "hidden" },
+			{ kind: "waitFor", selector: ".row", state: "detached" },
+			{ kind: "press", key: "Escape" },
+			{ kind: "press", key: "Enter", selector: "#form", timeoutMs: 900 },
+			{ kind: "click", selector: "#a", timeoutMs: 900 },
+		];
+		for (const step of fine) {
+			expect(stepShapeError(decodeStep(step)), JSON.stringify(step)).toBe(
+				undefined,
+			);
+		}
+	});
+
+	it("rejects minCount on a state that also passes when nothing matches", () => {
+		// `hidden` and `detached` both succeed on an empty match set, so a
+		// minimum *over matches* cannot express them; letting minCount through
+		// would give the counting path and the selector path two different
+		// meanings for the same word.
+		for (const state of ["hidden", "detached"]) {
+			const message = stepShapeError(
+				decodeStep({ kind: "waitFor", selector: ".row", state, minCount: 2 }),
+			);
+			expect(message).toContain("minCount counts matching elements");
+			expect(message).toContain(`state "${state}"`);
+			expect(message).toContain('use state "visible" or "attached"');
+		}
+	});
+
+	it("rejects a timeoutMs on a press with nothing to wait for", () => {
+		const message = stepShapeError(
+			decodeStep({ kind: "press", key: "Escape", timeoutMs: 9000 }),
+		);
+		expect(message).toContain("timeoutMs has no effect on an untargeted press");
+		expect(message).toContain("add a selector, or drop timeoutMs");
+	});
+});
+
+describe("planStep — inexpressible shapes", () => {
+	it("throws rather than planning one of the two meanings", () => {
+		expect(() =>
+			planStep(
+				decodeStep({
+					kind: "waitFor",
+					selector: ".row",
+					state: "hidden",
+					minCount: 2,
+				}),
+				ctx,
+			),
+		).toThrow(StepPlanError);
+		expect(() =>
+			planStep(decodeStep({ kind: "press", key: "Escape", timeoutMs: 1 }), ctx),
+		).toThrow(StepPlanError);
+	});
+
+	it("names the step it refused, so the failure reads like any other", () => {
+		try {
+			planStep(
+				decodeStep({
+					kind: "waitFor",
+					selector: ".row",
+					state: "detached",
+					minCount: 2,
+				}),
+				ctx,
+			);
+			throw new Error("expected planStep to throw");
+		} catch (error) {
+			expect(error).toBeInstanceOf(StepPlanError);
+			expect((error as StepPlanError).kind).toBe("waitFor");
+			expect((error as StepPlanError).target).toBe(".row");
+		}
+	});
+
+	it("only ever counts a state a count can mean something in", () => {
+		expect(isCountableState("visible")).toBe(true);
+		expect(isCountableState("attached")).toBe(true);
+		expect(isCountableState("hidden")).toBe(false);
+		expect(isCountableState("detached")).toBe(false);
+	});
+});
+
+describe("planStep — press timeouts", () => {
+	it("carries no timeout at all on an untargeted press", () => {
+		// Not "carries one the driver silently drops": `page.keyboard.press` has
+		// no element to wait for, and a plan that pretends otherwise is how a
+		// per-step timeoutMs came to be accepted and ignored.
+		expect(
+			planStep(decodeStep({ kind: "press", key: "Escape" }), {
+				...ctx,
+				defaultTimeoutMs: 12000,
+			}).plan,
+		).toEqual({
+			op: "press",
+			key: "Escape",
+			selector: undefined,
+			timeoutMs: undefined,
+		});
+	});
+
+	it("carries the resolved timeout on a targeted press", () => {
+		expect(
+			planStep(decodeStep({ kind: "press", key: "Enter", selector: "#form" }), {
+				...ctx,
+				defaultTimeoutMs: 12000,
+			}).plan,
+		).toMatchObject({ selector: "#form", timeoutMs: 12000 });
+	});
+});
+
+describe("planStep — the request host gate", () => {
+	// The same comparison both gates run: scheme, host and port.
+	const allow = (origin: string) => (url: URL) => url.origin === origin;
+
+	it("judges the host the path resolves to, against the page it resolves from", () => {
+		expect(() =>
+			planStep(
+				decodeStep({ kind: "request", method: "POST", path: "/api/seed" }),
+				{
+					pageUrl: "https://evil.test/landing",
+					isAllowedRequestUrl: allow("https://app.example.com"),
+				},
+			),
+		).toThrow(/outside the allowed origins/);
+	});
+
+	it("quotes both the resolved URL and the page it came from", () => {
+		try {
+			planStep(decodeStep({ kind: "request", method: "GET", path: "/api/x" }), {
+				pageUrl: "https://evil.test/landing",
+				isAllowedRequestUrl: allow("https://app.example.com"),
+			});
+			throw new Error("expected planStep to throw");
+		} catch (error) {
+			expect(error).toBeInstanceOf(StepPlanError);
+			expect((error as StepPlanError).message).toContain(
+				"https://evil.test/api/x",
+			);
+			expect((error as StepPlanError).message).toContain(
+				"https://evil.test/landing",
+			);
+			expect((error as StepPlanError).target).toBe("GET /api/x");
+		}
+	});
+
+	it("rejects an absolute off-host URL the same way", () => {
+		expect(() =>
+			planStep(
+				decodeStep({
+					kind: "request",
+					method: "GET",
+					path: "https://other.test/api",
+				}),
+				{ ...ctx, isAllowedRequestUrl: allow("https://app.example.com") },
+			),
+		).toThrow(StepPlanError);
+	});
+
+	it("plans a request the gate accepts", () => {
+		expect(
+			planStep(decodeStep({ kind: "request", method: "GET", path: "/api/x" }), {
+				...ctx,
+				isAllowedRequestUrl: allow("https://app.example.com"),
+			}).plan,
+		).toMatchObject({ url: "https://app.example.com/api/x" });
+	});
+
+	it("applies no gate when the caller supplies none, because planning is pure", () => {
+		// A caller that plans without driving a page is not making a request;
+		// the driver never omits the gate. See `createScriptedStateRunner`.
+		expect(
+			planStep(
+				decodeStep({
+					kind: "request",
+					method: "GET",
+					path: "https://other.test/api",
+				}),
+				ctx,
+			).plan,
+		).toMatchObject({ url: "https://other.test/api" });
 	});
 });

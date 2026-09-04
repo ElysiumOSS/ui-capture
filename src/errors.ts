@@ -67,8 +67,11 @@ export class StateDefinitionError extends S.TaggedError<StateDefinitionError>()(
  * an action that threw, a seeding request that returned the wrong status, or
  * the whole state exceeding its budget.
  *
- * `stepIndex: -1` with `stepKind: "state"` denotes a whole-state failure
- * (navigation or timeout) rather than one attributable step.
+ * `stepIndex: -1` denotes a failure that no step is answerable for, with
+ * `stepKind` naming which one: `"state"` for navigation or the whole-state
+ * budget, `"precondition"` for a probe that could not be evaluated at all —
+ * a malformed selector, a page that went away. A precondition that is simply
+ * *absent* is not a failure and produces no error; the state is `skipped`.
  */
 export class StateCaptureError extends S.TaggedError<StateCaptureError>()(
 	"StateCaptureError",

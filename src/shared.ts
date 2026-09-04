@@ -37,7 +37,13 @@ export type StateTask = {
 	readonly type: "state";
 	readonly url: string;
 	readonly stateName: string;
-	readonly normalizedUrl: string;
+	/**
+	 * Where the state's result lands. A state is a capture leaf — it never
+	 * feeds the crawl frontier and is never deduplicated by URL — so the
+	 * normalized URL a `RouteTask` needs has no reader here, and carrying one
+	 * would only invite a caller to key a state by it and collide with the
+	 * route capture for the same page.
+	 */
 	readonly resultKey: string;
 };
 
@@ -48,6 +54,26 @@ export type ShutdownTask = {
 export type QueueTask = RouteTask | StateTask | ShutdownTask;
 
 export const ShutdownSignal: ShutdownTask = { type: "shutdown" } as const;
+
+/**
+ * Best-effort teardown, for the release half of an `acquireUseRelease`.
+ *
+ * Closing a context or a page is what reaps its browser-side resources — and
+ * for a recording context, what flushes the video to disk — so it has to run
+ * on every exit path, including an interrupted one. It must never fail: a
+ * `close()` that rejects on an already-dead target would otherwise replace the
+ * real error with a teardown error and lose the reason the run stopped.
+ *
+ * Lives here because both the service (state and worker contexts, worker
+ * pages) and the video recorder need exactly this, and two copies are two
+ * chances for one of them to start reporting its failures.
+ */
+export const closeQuietly = (
+	close: () => Promise<unknown>,
+): Effect.Effect<void> =>
+	Effect.tryPromise({ try: close, catch: () => undefined }).pipe(
+		Effect.catchAll(() => Effect.void),
+	);
 
 export const LINK_FILTER_CONCURRENCY = 32;
 export const navigationRetryPolicy = Schedule.recurs(3);
@@ -199,6 +225,34 @@ export const createHostFilterState = (): HostFilterState => {
 		},
 	};
 };
+
+/**
+ * The origin gate every URL check in this codebase must agree on.
+ *
+ * An origin is **scheme + host + port**, so that is what gets compared:
+ * `hostMatchesFilters` decides the host (it canonicalizes `www.` and honors
+ * `--allowed-hosts` / `--include-subdomains`), and the seed decides the scheme
+ * and the port. Matching on hostname alone let `http://app.test:4000` through
+ * a filter whose whole purpose was to confine a run to `https://app.test` —
+ * a different port and a downgraded scheme are different servers, and for a
+ * `request` step that means a POST at a machine the user never named.
+ *
+ * `URL.port` is already normalized (`""` for a scheme's default), so
+ * `https://a.test` and `https://a.test:443` compare equal without special
+ * casing.
+ *
+ * Both the pre-launch validation in `states.ts` and the runtime request gate
+ * call this, so a states file that validates cannot be widened at runtime and
+ * a run cannot abort on something the runtime would have allowed.
+ */
+export const isAllowedOrigin = (
+	candidate: URL,
+	seed: URL,
+	hostMatchesFilters: (hostname: string) => boolean,
+): boolean =>
+	candidate.protocol === seed.protocol &&
+	candidate.port === seed.port &&
+	hostMatchesFilters(candidate.hostname);
 
 export const normalizeUrl = (url: string): string => {
 	try {

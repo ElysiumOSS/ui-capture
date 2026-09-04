@@ -317,12 +317,43 @@ describe("USAGE scripted states", () => {
 		expect(USAGE).toContain("--state-filter");
 		expect(USAGE).toContain("--skip-routes");
 		expect(USAGE).toContain("--state-timeout");
+		expect(USAGE).toContain("--precondition-timeout");
 		expect(USAGE).toContain("--allow-state-requests");
 		expect(USAGE).toContain("--fail-on-state-error");
 	});
 });
 
 describe("buildInvocation scripted-state flags — parsing edge cases", () => {
+	it("carries --precondition-timeout into overrides", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--states",
+				"./states.json",
+				"--precondition-timeout",
+				"25000",
+			]),
+		);
+		expect(inv.overrides.preconditionTimeout).toBe(25000);
+	});
+
+	it("leaves preconditionTimeout unset when the flag is absent", () => {
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.overrides.preconditionTimeout).toBeUndefined();
+	});
+
+	it("rejects a non-numeric --precondition-timeout", () => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs([
+					"https://example.com",
+					"--precondition-timeout",
+					"later",
+				]),
+			),
+		).toThrow(/--precondition-timeout must be an integer/);
+	});
+
 	it("rejects a non-numeric --state-timeout", () => {
 		expect(() =>
 			buildInvocation(

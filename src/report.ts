@@ -101,6 +101,12 @@ const generateMarkdown = (
 			}
 		}
 
+		if (result.videoErrors && result.videoErrors.length > 0) {
+			// A capture that lost its video still lists the screenshots above;
+			// this is the part that did not happen, named rather than dropped.
+			md += `**Video capture failed:** ${result.videoErrors.join("; ")}\n\n`;
+		}
+
 		md += "---\n\n";
 	}
 
@@ -149,6 +155,7 @@ export const generateReports = (
 				failedStepIndex: result.failedStepIndex,
 				screenshots: Object.keys(result.screenshots),
 				hasVideo: !!result.videos,
+				videoErrors: result.videoErrors,
 				error: result.error,
 			})),
 		});

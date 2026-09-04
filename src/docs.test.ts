@@ -36,6 +36,7 @@ describe("README ↔ USAGE", () => {
 			"--state-filter",
 			"--skip-routes",
 			"--state-timeout",
+			"--precondition-timeout",
 			"--allow-state-requests",
 			"--fail-on-state-error",
 		];
@@ -63,6 +64,10 @@ describe("README ↔ schema", () => {
 		const rows: ReadonlyArray<readonly [string, string]> = [
 			["states", "`[]`"],
 			["stateTimeout", `\`${CaptureConfig.Default.stateTimeout}\``],
+			[
+				"preconditionTimeout",
+				`\`${CaptureConfig.Default.preconditionTimeout}\``,
+			],
 			["captureRoutes", `\`${CaptureConfig.Default.captureRoutes}\``],
 			["allowStateRequests", `\`${CaptureConfig.Default.allowStateRequests}\``],
 		];

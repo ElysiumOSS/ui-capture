@@ -122,7 +122,10 @@ describe("createCaptureConfig scripted states", () => {
 		const cfg = createCaptureConfig();
 		expect(cfg.states).toEqual([]);
 		expect(cfg.captureRoutes).toBe(true);
-		expect(cfg.stateTimeout).toBe(30000);
+		// Raised from 30000 when the budget was narrowed to the reach phase: it
+		// has to exceed the 30 s navigation timeout, or a slow first load can
+		// spend the whole budget and leave the script none of it.
+		expect(cfg.stateTimeout).toBe(60000);
 		expect(cfg.allowStateRequests).toBe(false);
 	});
 

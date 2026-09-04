@@ -24,6 +24,16 @@
  * `state-script.ts` is the only place that drives a `Page`, so the whole
  * vocabulary — defaults, timeout precedence, URL resolution, the human-facing
  * labels in failure messages — is testable without launching Chromium.
+ *
+ * It is also where the two gates that *decide* rather than describe live, and
+ * they live here for the same reason: {@link stepShapeError} rejects a step
+ * whose fields contradict each other, and the `request` host check in
+ * {@link planStep} runs against the URL the step actually resolves to. Both are
+ * mirrored by pre-launch checks in `states.ts` so an authoring mistake aborts
+ * before Chromium launches, but the copies here are the authoritative ones:
+ * a plan is never built without them, whatever the caller did or did not
+ * validate first. Both gates run the same comparison the pre-launch pass does
+ * — `isAllowedOrigin` for a request — so neither can be wider than the other.
  */
 
 import type { CaptureStep } from "./schemas.js";
@@ -36,6 +46,22 @@ export const COUNT_POLL_INTERVAL_MS = 100;
 
 export type ElementState = "visible" | "hidden" | "attached" | "detached";
 
+/**
+ * The DOM states a `minCount` wait can count.
+ *
+ * `minCount` is a minimum over *matched elements*, so it only means something
+ * for a state an element can be matched in. `hidden` and `detached` both treat
+ * "there is no such element at all" as a pass on the selector path, which no
+ * minimum count can express — counting would silently redefine them. Those
+ * combinations are rejected by {@link stepShapeError} instead.
+ */
+export type CountableState = Extract<ElementState, "visible" | "attached">;
+
+/** Narrows an {@link ElementState} to one `minCount` can count. */
+export const isCountableState = (
+	state: ElementState,
+): state is CountableState => state === "visible" || state === "attached";
+
 export type StepPlan =
 	| {
 			readonly op: "waitForSelector";
@@ -47,7 +73,7 @@ export type StepPlan =
 			readonly op: "waitForCount";
 			readonly selector: string;
 			readonly minCount: number;
-			readonly state: ElementState;
+			readonly state: CountableState;
 			readonly timeoutMs: number;
 			readonly pollMs: number;
 	  }
@@ -74,7 +100,13 @@ export type StepPlan =
 			readonly op: "press";
 			readonly key: string;
 			readonly selector: string | undefined;
-			readonly timeoutMs: number;
+			/**
+			 * Only the targeted path takes one. Without a `selector` the key goes
+			 * to `page.keyboard`, which has no element to wait for and accepts no
+			 * timeout, so the plan carries none rather than one the driver would
+			 * quietly drop.
+			 */
+			readonly timeoutMs: number | undefined;
 	  }
 	| {
 			readonly op: "request";
@@ -115,6 +147,26 @@ export interface PlanContext {
 	readonly pageUrl: string;
 	/** Action default when a step omits `timeoutMs`. */
 	readonly defaultTimeoutMs?: number;
+	/**
+	 * The authoritative origin gate for `request` steps.
+	 *
+	 * `validateStates` also checks request origins before Chromium launches, but
+	 * against the state's *configured* URL, while a path resolves at runtime
+	 * against the live {@link pageUrl} — a script that clicks through to another
+	 * origin first resolves against one the pre-launch pass never saw. The gate
+	 * therefore has to be applied where the resolution happens, which is here;
+	 * the pre-launch check is a convenience that fails the run early.
+	 *
+	 * The predicate takes the resolved URL rather than its hostname so both
+	 * gates can be the same `isAllowedOrigin` comparison — scheme, host and
+	 * port — and a states file that validated cannot be widened at runtime.
+	 *
+	 * Omitted, no gate is applied: planning is a pure function, and a caller
+	 * that plans without driving a page is not making a request. The driver
+	 * never omits it — see `createScriptedStateRunner`, which falls back to a
+	 * same-origin-as-the-page gate when its own option is unset.
+	 */
+	readonly isAllowedRequestUrl?: (url: URL) => boolean;
 }
 
 /**
@@ -134,8 +186,14 @@ export class StepPlanError extends Error {
 	}
 }
 
-/** The value a failure message quotes for each step kind. */
-export const stepTarget = (step: CaptureStep): string => {
+/**
+ * The value a failure message quotes for each step kind.
+ *
+ * Internal: callers outside this module want {@link describeStep}, which is
+ * the whole human-facing label, or `PlannedStep.target`, which is this value
+ * already attached to the step it belongs to.
+ */
+const stepTarget = (step: CaptureStep): string => {
 	switch (step.kind) {
 		case "waitFor":
 		case "click":
@@ -192,10 +250,50 @@ export const resolveRequestUrl = (
 };
 
 /**
+ * Step shapes the schema admits but that cannot be carried out as written.
+ *
+ * The schema validates each field on its own; these are the combinations whose
+ * fields contradict *each other*, and the alternative to rejecting them is
+ * worse than a hard error — one field silently redefining another is how a
+ * script comes to mean something its author never wrote.
+ *
+ * Returns the reason, or `undefined` when the step is expressible. One
+ * function, two callers: `validateStates` runs it before Chromium launches so
+ * an authoring mistake aborts the run, and {@link planStep} runs it on every
+ * step it plans so no caller reaches the driver around it.
+ */
+export const stepShapeError = (step: CaptureStep): string | undefined => {
+	if (
+		step.kind === "waitFor" &&
+		step.minCount !== undefined &&
+		!isCountableState(step.state)
+	) {
+		return `minCount counts matching elements, but state "${step.state}" also passes when nothing matches at all, so a minimum over matches cannot express it; use state "visible" or "attached" with minCount, or drop minCount to wait for the first match to become ${step.state}`;
+	}
+	if (
+		step.kind === "press" &&
+		step.selector === undefined &&
+		step.timeoutMs !== undefined
+	) {
+		return `timeoutMs has no effect on an untargeted press: with no selector the key goes to page.keyboard, which has no element to wait for; add a selector, or drop timeoutMs`;
+	}
+	return undefined;
+};
+
+/**
  * Turns one declarative step into the operation a driver performs, applying
  * the timeout precedence: step `timeoutMs`, then the action default.
+ *
+ * Throws {@link StepPlanError} for a step that cannot be planned: a shape
+ * {@link stepShapeError} rejects, a `request` path that will not resolve, or a
+ * `request` that resolves outside `ctx.isAllowedRequestUrl`.
  */
 export const planStep = (step: CaptureStep, ctx: PlanContext): PlannedStep => {
+	const shapeError = stepShapeError(step);
+	if (shapeError !== undefined) {
+		throw new StepPlanError(step.kind, stepTarget(step), shapeError);
+	}
+
 	const timeoutMs =
 		step.timeoutMs ?? ctx.defaultTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
 	const common = {
@@ -211,20 +309,25 @@ export const planStep = (step: CaptureStep, ctx: PlanContext): PlannedStep => {
 			return {
 				...common,
 				plan:
-					step.minCount === undefined
+					// The state re-test is what proves to the type system that a
+					// counting plan only ever carries a countable state; the throw
+					// above has already rejected the alternative, and if it were ever
+					// removed this degrades to the plain selector wait rather than
+					// counting something `hidden` does not mean.
+					step.minCount !== undefined && isCountableState(step.state)
 						? {
-								op: "waitForSelector",
-								selector: step.selector,
-								state: step.state,
-								timeoutMs,
-							}
-						: {
 								op: "waitForCount",
 								selector: step.selector,
 								minCount: step.minCount,
 								state: step.state,
 								timeoutMs,
 								pollMs: COUNT_POLL_INTERVAL_MS,
+							}
+						: {
+								op: "waitForSelector",
+								selector: step.selector,
+								state: step.state,
+								timeoutMs,
 							},
 			};
 		case "wait":
@@ -266,16 +369,30 @@ export const planStep = (step: CaptureStep, ctx: PlanContext): PlannedStep => {
 					op: "press",
 					key: step.key,
 					selector: step.selector,
-					timeoutMs,
+					// An untargeted press carries no timeout at all, rather than one
+					// the driver would compute and then silently drop; an explicit
+					// one on that shape was rejected by stepShapeError above.
+					timeoutMs: step.selector === undefined ? undefined : timeoutMs,
 				},
 			};
-		case "request":
+		case "request": {
+			const url = resolveRequestUrl(step.path, ctx.pageUrl);
+			if (
+				ctx.isAllowedRequestUrl !== undefined &&
+				!ctx.isAllowedRequestUrl(url)
+			) {
+				throw new StepPlanError(
+					"request",
+					stepTarget(step),
+					`resolves to "${url.toString()}" against the page URL "${ctx.pageUrl}", which is outside the allowed origins: an origin is scheme + host + port`,
+				);
+			}
 			return {
 				...common,
 				plan: {
 					op: "request",
 					method: step.method,
-					url: resolveRequestUrl(step.path, ctx.pageUrl).toString(),
+					url: url.toString(),
 					json: step.json,
 					hasJson: step.json !== undefined,
 					headers: { ...(step.headers ?? {}) },
@@ -283,6 +400,7 @@ export const planStep = (step: CaptureStep, ctx: PlanContext): PlannedStep => {
 					timeoutMs,
 				},
 			};
+		}
 		case "reload":
 			return {
 				...common,

@@ -166,10 +166,22 @@ Options:
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
                               app's dialogs and workspaces get captured too.
-  --state-filter <a,b,...>    Run only these named states (default: all)
+  --state-filter <a,b,...>    Capture only these named states (default: all).
+                              A state they extend is replayed to reach them,
+                              and is not captured itself.
   --skip-routes               Capture only scripted states, not crawled routes
-  --state-timeout <ms>        Per-state budget covering navigation, script and
-                              capture (default: 30000; a state may override it)
+  --state-timeout <ms>        Budget for reaching a state: navigation,
+                              precondition probe and script. Screenshot and
+                              video capture are outside it (default: 60000;
+                              a state may override it with timeoutMs)
+  --precondition-timeout <ms> Budget for a state's precondition probe, which
+                              decides whether the state exists on this build
+                              at all (default: 10000; a state may override it
+                              with preconditionTimeoutMs). Raise it for an app
+                              whose first meaningful frame lands well after
+                              networkidle, such as a WebGL console — a probe
+                              that gives up first records the state as skipped
+                              rather than slow.
   --allow-state-requests      Permit request steps, which reach past the UI
                               into the app's own backend. Off by default: a
                               states file from a colleague should not be able
@@ -352,7 +364,8 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 | `ffmpegPath`                | `--ffmpeg`              | `string`                   | `"ffmpeg"`                         | Absolute path or anything on `PATH`. |
 | `launchArgs`                | `--launch-args`         | `string[]`                 | `[]`                               | Appended after the baseline switches so they win on conflict; the CLI value splits on whitespace rather than commas, since one switch may itself contain commas. |
 | `states`                    | `--states`              | `CaptureState[]`           | `[]`                               | Named interaction scripts, each yielding its own capture set; empty by default, so a run without a states file behaves exactly as it always has. |
-| `stateTimeout`              | `--state-timeout`       | `int ≥ 1` (ms)             | `30000`                            | Whole-state budget covering navigation, script and capture; a state may override it with its own `timeoutMs`. |
+| `stateTimeout`              | `--state-timeout`       | `int ≥ 1` (ms)             | `60000`                            | Budget for *reaching* a state — navigation, the `precondition` probe and the script; screenshot and video capture sit outside it, and a state may override it with its own `timeoutMs`. |
+| `preconditionTimeout`       | `--precondition-timeout`| `int ≥ 1` (ms)             | `10000`                            | Budget for a state's `precondition` probe: long enough for an app whose first meaningful frame lands after `networkidle` — a probe that gives up first records the state as `skipped` rather than slow — and short enough that a state which genuinely is not here skips cheaply; a state may override it with its own `preconditionTimeoutMs`. |
 | `captureRoutes`             | `--skip-routes` (¬)     | `boolean`                  | `true`                             | Set `false` to capture only scripted states, for an app whose boot view is a loading spinner. |
 | `allowStateRequests`        | `--allow-state-requests`| `boolean`                  | `false`                            | Gate on `request` steps, checked at load time *and* in the service so a programmatic caller cannot skip it. |
 
@@ -433,12 +446,13 @@ Rejecting loudly beats slugifying two states into one directory, and lowercase-o
 | `name` | `string` matching `^[a-z0-9][a-z0-9-]*$` | *required* | Identifies the state, and names its output directory. |
 | `steps` | `CaptureStep[]` | *required* | The script, run in order on a fresh page load. |
 | `description` | `string` | — | Free text; carried for the reader, not used by the tool. |
-| `url` | `string` | the seed URL | Absolute, or relative to the seed URL, and subject to the same host filter as any crawled link. |
-| `extends` | `string` | — | Another state's name, whose steps are prepended to this one's; chains deeper than five links are rejected. |
-| `precondition` | `string` (CSS selector) | — | Probed on the fresh load before any step; absent means the state is recorded `skipped` rather than `failed`. |
-| `viewports` | `string[]` | every configured viewport | Restrict the state to named viewports, for UI that does not exist at every breakpoint. |
-| `timeoutMs` | `int ≥ 1` | `--state-timeout` (30000) | Whole-state budget covering navigation, script and capture. |
-| `allowVideoReplay` | `boolean` | `false` | Record video for a state whose script contains a `request` step, when that seed is idempotent. |
+| `url` | `string` | the seed URL | Absolute, or relative to the seed URL, and confined to an allowed **origin** — scheme, host and port all compared, with the host filter deciding the host and the seed deciding the scheme and port. |
+| `extends` | `string` | — | Another state's name, whose steps are prepended to this one's; `url` and `allowVideoReplay` are inherited with them, and chains deeper than five links are rejected. |
+| `precondition` | `string` (CSS selector) | — | Probed on the fresh load before any step; absent means the state is recorded `skipped` rather than `failed`, while a selector that cannot be *evaluated* is neither — the state fails. |
+| `preconditionTimeoutMs` | `int ≥ 1` | `--precondition-timeout` (10000) | Budget for this state's probe, for UI that is ready at first paint or, at the other end, several seconds after it. |
+| `viewports` | `string[]` (at least one) | every configured viewport | Restrict the state to named viewports, for UI that does not exist at every breakpoint; an empty array is rejected, because it would capture nothing and still be reported as captured, so omit the field to use every configured viewport. |
+| `timeoutMs` | `int ≥ 1` | `--state-timeout` (60000) | Budget for reaching the state: navigation, the `precondition` probe and the script; capture sits outside it. |
+| `allowVideoReplay` | `boolean` | `false` | Record video for a state whose script contains a `request` step, when that seed is idempotent; inherited through `extends`, because the `request` step that triggers the suppression is inherited too. |
 
 ### Running it
 
@@ -473,6 +487,7 @@ ui-captures/
 Each `screenshots/` directory holds the same `png/` `webp/` `jpg/` triple a route capture produces, so nothing downstream has to special-case a state.
 `--skip-routes` drops `root/screenshots/` and captures only the four state sets, for an app whose boot view is a loading spinner.
 `--state-filter fleet-editor` runs one state, which is how you iterate on a script you are still writing.
+A filter selects *capture targets*, not a subgraph: if `fleet-editor` extends `fleet-multidomain`, the parent's steps are folded into `fleet-editor` and replayed, but `fleet-multidomain` is not itself captured and its own steps — a `request` seed among them — do not run a second time as a state of their own.
 
 If `fleet-editor`'s last `waitFor` never resolves, the run still finishes: the other three states capture, `root/states/fleet-editor/` is created and left empty, `REPORT.md` gains a row naming the failing step, and `--fail-on-state-error` makes the process exit non-zero so CI does not go green on a state that never rendered.
 
@@ -480,7 +495,7 @@ If `fleet-editor`'s last `waitFor` never resolves, the run still finishes: the o
 
 | Kind | Fields | What it is for |
 | ---- | ------ | -------------- |
-| `waitFor` | `selector`, `state?` (`visible` \| `hidden` \| `attached` \| `detached`, default `visible`), `minCount?` | Readiness, and the assertion mechanism, because the load event is a lie in an SPA; `minCount` exists so waiting for *one* `.fleet-row` cannot shoot a half-populated fleet. |
+| `waitFor` | `selector`, `state?` (`visible` \| `hidden` \| `attached` \| `detached`, default `visible`), `minCount?` (with `visible` or `attached` only) | Readiness, and the assertion mechanism, because the load event is a lie in an SPA; `minCount` exists so waiting for *one* `.fleet-row` cannot shoot a half-populated fleet. |
 | `wait` | `ms` | The crude one, and the only honest tool for a WebGL scene whose intro tween has no DOM correlate; prefer `settleMs`, or a `waitFor` on a readiness attribute. |
 | `click` | `selector`, `nth?` (zero-based) | Opens the dialog, the tab, the workspace; Playwright auto-scrolls and auto-waits for actionability. |
 | `fill` | `selector`, `value` | Callsigns, coordinates, waypoints; also handles `contenteditable`. |
@@ -490,6 +505,17 @@ If `fleet-editor`'s last `waitFor` never resolves, the run still finishes: the o
 | `reload` | `waitUntil?` (default `networkidle`) | Re-enters the app against new server state; `[request, reload, waitFor]` is the canonical seeding idiom. |
 
 Every step also accepts three modifiers: `optional` (log and skip on failure — this is how "dismiss the cookie banner if it's there" is expressed, as one shared modifier rather than a parallel `clickIfPresent` family), `timeoutMs` (per-step override, default 5000), and `settleMs` (pause after the step succeeds).
+
+Two field combinations the schema admits are rejected rather than reinterpreted, because in both cases one field would silently redefine another:
+
+- **`minCount` with `state: "hidden"` or `"detached"`.**
+  Both of those states also pass when *nothing matches at all*, which is not something a minimum over matches can express — the counting path and the selector path would mean different things by the same word.
+  Use `visible` or `attached` with `minCount`, or drop `minCount` to wait for the first match to become `hidden`/`detached`.
+- **`timeoutMs` on a `press` with no `selector`.**
+  The key goes to `page.keyboard`, which has no element to wait for and takes no timeout, so the value would be computed and then dropped.
+  Add a selector, or drop `timeoutMs`.
+
+Both are reported before Chromium launches, and rejected again when the step is planned, so a programmatic caller cannot route around the early check.
 
 ### The rules that keep the vocabulary small
 
@@ -510,25 +536,44 @@ The same reasoning excludes `drag` and `mouseMove`.
 Each state starts from a **fresh page load in a fresh browser context**.
 `page.goto` clears neither cookies nor `localStorage`, so reusing a worker's page would let state N inherit state N-1's client storage and make determinism aspirational rather than true.
 
-`extends` is script composition, not page-state carryover: the child replays the parent's steps from its own clean load, and inherits the parent's `url` unless it sets one.
+`extends` is script composition, not page-state carryover: the child replays the parent's steps from its own clean load.
+Exactly three things flow down a chain: the steps, `url` (unless the child sets one), and `allowVideoReplay` — the last of those because the inherited `request` step is what suppresses video in the first place, and inheriting the suppression without its opt-out would leave a child unable to undo a decision it never made.
+`precondition`, `viewports` and `timeoutMs` describe the child's own capture rather than the script it replays, and stay per-state.
 Replay costs wall clock and buys the thing that matters — any state runs on any worker, in any order, with no cross-task coupling.
 Cycles, unknown parents and chains deeper than five links are rejected before Chromium launches.
+An ancestor is resolution input rather than a capture target: under `--state-filter` it is folded into the states that name it and is not captured itself.
 
 Failures split two ways.
-**Authoring errors abort** — duplicate names, a typo'd `extends`, an off-host `request`, a viewport filter naming a viewport that is not configured.
+**Authoring errors abort** — duplicate names, a typo'd `extends`, an off-origin `url` or `request`, a viewport filter that is empty or names a viewport that is not configured.
 **Runtime errors are recorded and the run continues**, exactly as a failing route does: the state's `CaptureResult` carries `stateStatus: "failed"`, the message names the step (`state "fleet-editor" failed at step 3 (waitFor ".fleet-row"): expected >=6 matching "visible", found 2 after 30000ms`), and `failedStepIndex` is what CI greps for.
-A state that times out reports the step it was actually on, not just "timed out".
+A state that times out reports what it was actually doing — `while loading <url>`, `while probing precondition "<sel>"`, `on step 3 (waitFor ".fleet-row")`, `while settling after step 3` — rather than the step it last started, which by then may be one that already succeeded.
+
+`--state-timeout` (and a state's own `timeoutMs`) bounds **reaching** the state: the navigation, the `precondition` probe and the script.
+It stops there.
+Screenshot and video capture are bounded by their own timeouts and by `--video-duration` × the number of viewports, and folding those into one whole-state budget makes the budget unsatisfiable rather than protective: a state captured with `--video` cannot fit any default, so every state times out on a configuration that looks entirely reasonable.
+The default is `60000` because a single navigation may take the full 30 s Playwright allows it, and a budget at or below that leaves the script none.
 Its directory is created and left empty, because an empty `states/fleet-editor/` is a visible artefact of something attempted and missed.
 
 `precondition` separates a third outcome from those two.
 A state whose precondition selector is absent on the loaded page is recorded as `skipped`, not `failed` — "this state does not exist here" (feature flag off, unauthenticated build, dev-only panel) is a different event from "this state's script is broken", and collapsing them is how a report becomes noise you learn to ignore.
 `--fail-on-state-error` counts failures and deliberately ignores skips.
 
+A precondition that cannot be **evaluated** is a fourth thing again, and it is a failure.
+The probe evaluates the selector once before it starts waiting on it: a malformed selector rejects there whether or not the element exists, while a valid selector that matches nothing yet counts zero and falls through to the wait.
+Without that split, a typo'd selector answers "not present here" and the state skips — a green run that captured nothing, which is the worst outcome available and the hardest to notice.
+
+The probe's budget is `--precondition-timeout` (default 10000), or the state's own `preconditionTimeoutMs`.
+Raise it for an app whose first meaningful frame lands well after `networkidle` — a WebGL console is the motivating case — because a probe that expires first reports the state as absent rather than slow, which is the same green-run-with-nothing-captured failure by another route.
+
 ### Gotchas worth knowing before you write one
 
 - **`request` is opt-in, and it is the sharpest edge here.**
-  The `path` form makes it same-origin by construction and the crawler's host filter is applied as a second gate, but no validation stops a committed `DELETE /api/fleet` from running against a staging URL that happens to resolve to production.
+  The `path` form makes it same-origin by construction and an origin gate is applied as a second one — scheme, host **and** port must all match an allowed origin, so an absolute path to `http://app.test:9000` is rejected rather than quietly permitted for sharing a hostname — but no validation stops a committed `DELETE /api/fleet` from running against a staging URL that happens to resolve to production.
   The URL and payload are legible in a diff; that is the mitigation.
+  **The gate that decides is the runtime one.**
+  A path resolves against the page's *live* URL, so a script that clicks through to another origin first resolves its requests against an origin the pre-launch pass never saw.
+  The same origin comparison is therefore applied again in the driver, to the URL each step actually resolves to, before the request is planned — same rule, same seed, so a states file that validated cannot be widened at runtime and a run cannot abort on something the runtime would have allowed.
+  The pre-launch check in `validateStates` sees only the state's configured `url`: it exists to fail an obviously off-origin path before Chromium launches, and is not the boundary.
 - **Server state is outside the isolation boundary.**
   A fresh context cannot un-seed a server, so two seeding states can interfere — and with `--concurrency` above 1 they can interfere concurrently.
   Use idempotent or per-state-keyed seeds, or `--concurrency 1`; the run prints an advisory when a states file seeds and workers run in parallel.
@@ -536,8 +581,12 @@ A state whose precondition selector is absent on the loaded page is recorded as 
   A responsive app that unmounts the dialog at 375px will otherwise produce a mobile screenshot of the boot view recorded as success.
   Pin such a state with `"viewports": ["desktop"]`.
 - **Video replays the script in a second context.**
+  The recording context navigates to the state's entry URL — the same page the capture started from, not wherever the script happened to leave the captured page — and replays the steps from there, so the recording and the stills are the same run.
   A state containing a `request` step therefore skips video by default, because a non-idempotent seed would run twice and the video would show twelve drones beside stills showing six.
-  Set `"allowVideoReplay": true` on the state when the seed is idempotent.
+  Set `"allowVideoReplay": true` on the state when the seed is idempotent; a state that `extends` such a parent inherits both the step and the flag.
+- **A failed recording does not discard the screenshots.**
+  The stills for a viewport are already on disk when its recording starts, so a video that fails afterwards is reported per viewport in `videoErrors` and the capture still counts as a success.
+  A run that lost only its videos should not read as a run that captured nothing.
 - **Selectors are a maintenance liability.**
   A crawl adapts to a site that changed; a script does not.
   That is the trade scripted states make — the crawler's zero-maintenance property for reach into states a crawler cannot see.
@@ -591,6 +640,7 @@ type CaptureReport = {
     failedStepIndex?: number; // -1 for a whole-state failure
     screenshots: string[];    // viewport names that produced a triple
     hasVideo: boolean;
+    videoErrors?: string[];   // "<viewport>: <reason>" — stills kept, video lost
     error?: string;
   }>;
 };

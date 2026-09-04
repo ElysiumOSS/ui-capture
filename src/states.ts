@@ -24,13 +24,25 @@
  * errors that abort the run before Chromium launches, because no amount of
  * retrying makes them resolve. Runtime failures are the opposite: recorded per
  * state, run continues. That split is the whole failure model.
+ *
+ * The `request` origin check here is an early abort, not the boundary. A
+ * request path resolves against the *live* page URL at the moment the step
+ * runs, and a script that navigates first moves that base out from under this
+ * pass, which only ever sees the state's configured URL. The gate that decides
+ * is the one `planStep` applies at runtime; see `state-plan.ts`.
  */
 
 import { ArrayFormatter, ParseResult, Schema as S } from "@effect/schema";
 import { Effect } from "effect";
 import { StateDefinitionError } from "./errors.js";
-import { type CaptureState, type CaptureStep, StatesFile } from "./schemas.js";
-import { resolveRequestUrl, StepPlanError } from "./state-plan.js";
+import { CaptureState, type CaptureStep, StatesFile } from "./schemas.js";
+import { isAllowedOrigin } from "./shared.js";
+import {
+	describeStep,
+	resolveRequestUrl,
+	StepPlanError,
+	stepShapeError,
+} from "./state-plan.js";
 
 /** How deep an `extends` chain may go before it stops being reviewable. */
 export const MAX_STATE_CHAIN_DEPTH = 5;
@@ -42,6 +54,17 @@ export interface ResolvedState {
 	readonly steps: readonly CaptureStep[];
 	/** The state's own `url`, or the nearest ancestor's. */
 	readonly url: string | undefined;
+	/**
+	 * Set by this state or by any ancestor.
+	 *
+	 * The video suppression it opts out of is triggered by the *resolved* step
+	 * list, so a child that inherits a parent's `request` step inherits the
+	 * suppression; inheriting the opt-out alongside it is what keeps the pair
+	 * from disagreeing. `extends` inherits exactly three things — steps, `url`
+	 * and this flag; `precondition`, `viewports` and `timeoutMs` describe the
+	 * child's own capture and stay per-state.
+	 */
+	readonly allowVideoReplay: boolean;
 }
 
 const decodeStatesFile = S.decodeUnknownEither(StatesFile);
@@ -102,6 +125,10 @@ const definitionError = (
  * starts from a fresh load in a fresh context and replays the parent's steps.
  * Replay costs wall clock and buys the thing that matters — any state runs on
  * any worker, in any order, with no cross-task coupling.
+ *
+ * Three things flow down a chain: the steps, `url`, and `allowVideoReplay`.
+ * Everything else (`precondition`, `viewports`, `timeoutMs`) describes the
+ * child's own capture rather than the script it replays.
  *
  * Throws {@link StateDefinitionError} on an unknown parent, a cycle, or a
  * chain deeper than {@link MAX_STATE_CHAIN_DEPTH}.
@@ -165,6 +192,8 @@ export const resolveStateSteps = (
 			state,
 			steps: [...(inherited?.steps ?? []), ...state.steps],
 			url: state.url ?? inherited?.url,
+			allowVideoReplay:
+				state.allowVideoReplay || (inherited?.allowVideoReplay ?? false),
 		};
 		resolved.set(state.name, value);
 		return value;
@@ -230,6 +259,21 @@ export const validateStates = (
 
 		const viewportSet = new Set(viewportNames);
 
+		// Parsed once, and up front: it is the origin every state URL and every
+		// `request` path is measured against, so an unusable seed is a definition
+		// error rather than a defect thrown from inside the loop.
+		let seed: URL;
+		try {
+			seed = new URL(seedUrl);
+		} catch {
+			return Effect.fail(
+				definitionError(
+					"(run)",
+					`seed url "${seedUrl}" is not an absolute URL, so state urls have nothing to resolve against`,
+				),
+			);
+		}
+
 		for (const entry of resolved.values()) {
 			const { state } = entry;
 
@@ -244,11 +288,11 @@ export const validateStates = (
 					),
 				);
 			}
-			if (!hostMatchesFilters(stateUrl.hostname)) {
+			if (!isAllowedOrigin(stateUrl, seed, hostMatchesFilters)) {
 				return Effect.fail(
 					definitionError(
 						state.name,
-						`url "${stateUrl.toString()}" is outside the allowed hosts`,
+						`url "${stateUrl.toString()}" is outside the allowed origins: an origin is scheme + host + port, and the seed's is "${seed.origin}"`,
 					),
 				);
 			}
@@ -268,6 +312,21 @@ export const validateStates = (
 			}
 
 			for (const [index, step] of entry.steps.entries()) {
+				// Fields that contradict each other — a `minCount` on a state no
+				// count can express, a `timeoutMs` on a press with nothing to wait
+				// for. `planStep` rejects these again at runtime; catching them here
+				// is what turns them into a fixable authoring error rather than a
+				// failed state per viewport.
+				const shapeError = stepShapeError(step);
+				if (shapeError !== undefined) {
+					return Effect.fail(
+						definitionError(
+							state.name,
+							`step ${index} (${describeStep(step)}): ${shapeError}`,
+						),
+					);
+				}
+
 				if (step.kind !== "request") continue;
 				if (!allowStateRequests) {
 					return Effect.fail(
@@ -290,11 +349,11 @@ export const validateStates = (
 						),
 					);
 				}
-				if (!hostMatchesFilters(requestUrl.hostname)) {
+				if (!isAllowedOrigin(requestUrl, seed, hostMatchesFilters)) {
 					return Effect.fail(
 						definitionError(
 							state.name,
-							`step ${index} (request ${step.method} ${step.path}) resolves to "${requestUrl.toString()}", which is outside the allowed hosts`,
+							`step ${index} (request ${step.method} ${step.path}) resolves to "${requestUrl.toString()}", which is outside the allowed origins: an origin is scheme + host + port, and the seed's is "${seed.origin}"`,
 						),
 					);
 				}
@@ -305,9 +364,48 @@ export const validateStates = (
 	});
 
 /**
- * Narrows a states list to the named states, keeping every ancestor they
- * `extends` so a filtered run still resolves. Throws when a name matches
- * nothing, because silently running zero states is the coverage lie again.
+ * Rewrites a resolved state as a self-contained one: the chain's steps inlined
+ * in order, the inherited `url` and `allowVideoReplay` made explicit, and
+ * `extends` dropped so nothing downstream needs the ancestor to still be in
+ * the list.
+ *
+ * Everything {@link resolveStateSteps} inherits has to be written back here,
+ * not just the steps. `allowVideoReplay` is the one that bites: the `request`
+ * step which suppresses video is inherited, so a child that carried the step
+ * but not the parent's opt-out would record video on an unfiltered run and
+ * silently drop it under `--state-filter`: one file, two different results.
+ *
+ * Spread-then-override rather than a field-by-field copy, so a field added to
+ * {@link CaptureState} later is carried instead of silently lost here.
+ */
+const flattenChain = (entry: ResolvedState): CaptureState => {
+	const { state } = entry;
+	if (state.extends === undefined) return state;
+	const { extends: _inherited, ...own } = state;
+	return new CaptureState({
+		...own,
+		steps: [...entry.steps],
+		allowVideoReplay: entry.allowVideoReplay,
+		...(entry.url !== undefined ? { url: entry.url } : {}),
+	});
+};
+
+/**
+ * Narrows a states list to the named states, and to those only.
+ *
+ * An ancestor reached through `extends` is *resolution* input, not a capture
+ * target. Returning it alongside the named states — which is what a flat
+ * "keep the ancestors too" list does — captures states the user did not name
+ * and re-runs their side-effecting steps, a `request` seed among them, which
+ * is the opposite of what a filter means. So the chain is resolved here and
+ * folded into each named state instead: the returned states carry everything
+ * the chain contributes — the ancestors' steps, the inherited `url` and the
+ * inherited `allowVideoReplay` — and carry no `extends`, so a filtered run
+ * captures each named state exactly as an unfiltered one does.
+ *
+ * Throws when a name matches nothing, because silently running zero states is
+ * the coverage lie again, and propagates {@link StateDefinitionError} from
+ * chain resolution — a filtered run has to resolve before it can be flattened.
  */
 export const filterStates = (
 	states: ReadonlyArray<CaptureState>,
@@ -323,17 +421,17 @@ export const filterStates = (
 		);
 	}
 
-	const keep = new Set<string>();
-	const visit = (name: string, seen: ReadonlySet<string>): void => {
-		if (keep.has(name) || seen.has(name)) return;
-		const state = byName.get(name);
-		if (!state) return;
-		keep.add(name);
-		if (state.extends !== undefined) {
-			visit(state.extends, new Set([...seen, name]));
-		}
-	};
-	for (const name of names) visit(name, new Set());
+	// Resolution runs over the *whole* file: the ancestors have to be reachable
+	// to be folded in, even though none of them is being captured.
+	const resolved = resolveStateSteps(states);
+	const selected = new Set(names);
 
-	return states.filter((state) => keep.has(state.name));
+	// File order, deduplicated: a name repeated in --state-filter must not
+	// capture the same directory twice.
+	return states
+		.filter((state) => selected.has(state.name))
+		.map((state) => {
+			const entry = resolved.get(state.name);
+			return entry === undefined ? state : flattenChain(entry);
+		});
 };
