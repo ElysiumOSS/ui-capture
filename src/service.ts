@@ -734,6 +734,21 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 														`[Worker ${workerId}] Failed to capture ${task.url}:`,
 														error,
 													);
+													// A failed route is recorded, not merely logged:
+													// otherwise `failedCaptures` is structurally 0 and
+													// a half-crawled site reports as fully covered.
+													if (!results.has(task.normalizedUrl)) {
+														results.set(
+															task.normalizedUrl,
+															new CaptureResult({
+																url: task.url,
+																route: getRouteName(task.url),
+																screenshots: {},
+																error: formatCaptureFailure(error),
+																timestamp: Date.now(),
+															}),
+														);
+													}
 													return Effect.void;
 												}),
 												Effect.ensuring(markTaskComplete()),
