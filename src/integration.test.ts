@@ -726,10 +726,17 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		expect(result.failedStepIndex).toBe(-1);
 	}, 60_000);
 
-	it("names the step that was actually running when the budget expired", async () => {
-		// The other half of the same claim: when a step *is* what is running,
-		// the message and `failedStepIndex` name that step — not the state, and
-		// not a step that already succeeded.
+	it("tells a step that is still running from one that already finished", async () => {
+		// The half of the phase claim that discriminates. The old model carried
+		// an index and nothing else, set when a step *started*, so it named that
+		// step for anything that hung afterwards — including the settle pause a
+		// step asks for once it has succeeded. That is the reported-against-work-
+		// that-already-worked case, and it is worded identically to a step that
+		// really is stuck unless the phase is recorded.
+		//
+		// So both are run here: `hangs-on-step-1`, where naming the step is
+		// right, and `settles-past-budget`, where it is wrong. Only the pair
+		// pins the fix; either alone is satisfied by the model that was replaced.
 		const dir = await outDir("budget-in-step");
 		const states = await writeStatesFile(dir, [
 			{
@@ -742,6 +749,16 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 					{ kind: "waitFor", selector: "#never-appears", timeoutMs: 60_000 },
 				],
 			},
+			{
+				// Every step succeeds. The budget is spent in the settle pause the
+				// click asked for, long after the click itself was done.
+				name: "settles-past-budget",
+				timeoutMs: 2500,
+				steps: [
+					{ kind: "waitFor", selector: "[data-app-ready]" },
+					{ kind: "click", selector: "#reveal", settleMs: 30_000 },
+				],
+			},
 		]);
 
 		await capture(baseUrl, {
@@ -751,11 +768,27 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		});
 
 		const report = await readReport(dir);
-		const result = report.results[0];
-		expect(result.stateStatus).toBe("failed");
-		expect(result.error).toContain("timed out after 2500ms");
-		expect(result.error).toContain('on step 1 (waitFor "#never-appears")');
-		expect(result.failedStepIndex).toBe(1);
+		const resultFor = (name: string) =>
+			report.results.find((r: { state?: string }) => r.state === name);
+
+		const stuck = resultFor("hangs-on-step-1");
+		expect(stuck.stateStatus).toBe("failed");
+		expect(stuck.error).toContain("timed out after 2500ms");
+		expect(stuck.error).toContain('on step 1 (waitFor "#never-appears")');
+		expect(stuck.failedStepIndex).toBe(1);
+
+		const settling = resultFor("settles-past-budget");
+		expect(settling.stateStatus).toBe("failed");
+		expect(settling.error).toContain("timed out after 2500ms");
+		// Named as the step it was settling *after*. "on step 1" would send the
+		// reader to a click that had already worked.
+		expect(settling.error).toContain(
+			'while settling after step 1 (click "#reveal")',
+		);
+		expect(settling.error).not.toContain('on step 1 (click "#reveal")');
+		// The index still points at the step the pause belongs to: the pause is
+		// part of that step's definition, so it is the right thing to name.
+		expect(settling.failedStepIndex).toBe(1);
 	}, 120_000);
 
 	it("restricts a state to the viewports it is valid at", async () => {

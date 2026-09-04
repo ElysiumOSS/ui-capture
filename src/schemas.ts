@@ -230,7 +230,15 @@ export class CaptureState extends S.Class<CaptureState>("CaptureState")({
 	 */
 	viewports: S.optional(S.Array(S.String).pipe(S.minItems(1))),
 	steps: S.Array(CaptureStep),
-	/** Whole-state budget: navigation + script + capture. */
+	/**
+	 * Budget for *reaching* this state — navigation, the `precondition` probe
+	 * and the script — overriding `stateTimeout` for the run.
+	 *
+	 * It stops there, exactly as the run-wide default does: screenshot and
+	 * video capture run outside it, under their own timeouts. A budget that
+	 * covered capture too could not be satisfied by any value once `--video`
+	 * was on.
+	 */
 	timeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
 	/**
 	 * Record video for this state even though its script contains a `request`
