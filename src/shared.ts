@@ -227,7 +227,8 @@ export const createHostFilterState = (): HostFilterState => {
 };
 
 /**
- * The origin gate every URL check in this codebase must agree on.
+ * The origin gate for the two decisions that let a run *act* on a URL: a
+ * scripted state's entry `url`, and the URL a `request` step resolves to.
  *
  * An origin is **scheme + host + port**, so that is what gets compared:
  * `hostMatchesFilters` decides the host (it canonicalizes `www.` and honors
@@ -242,8 +243,20 @@ export const createHostFilterState = (): HostFilterState => {
  * casing.
  *
  * Both the pre-launch validation in `states.ts` and the runtime request gate
- * call this, so a states file that validates cannot be widened at runtime and
- * a run cannot abort on something the runtime would have allowed.
+ * in the state driver call this, so a states file that validates cannot be
+ * widened at runtime and a run cannot abort on something the runtime would
+ * have allowed.
+ *
+ * **Route crawling deliberately does not use this gate.** `scheduleRoute` in
+ * `service.ts` and the link filter in `link-discovery.ts` match on the
+ * hostname alone, so a crawl seeded at `http://app.test:3000` will follow and
+ * capture a link to `https://app.test` or `http://app.test:8080`. The two
+ * answer different questions: crawling navigates and screenshots, and within
+ * one deployment an http→https or cross-port link is ordinary rather than
+ * suspicious, while this gate authorizes driving a scripted state at a URL and
+ * sending a `request` step's POST or DELETE at it. `--allowed-hosts` and
+ * `--include-subdomains` are documented as hostname filters, and hostname is
+ * what bounds a crawl.
  */
 export const isAllowedOrigin = (
 	candidate: URL,

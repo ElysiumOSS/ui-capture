@@ -371,6 +371,10 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 
 `(¬)` means the CLI flag *negates* the default — e.g. `--no-warmup` sets `warmupScroll: false`.
 
+`includeSubdomains` and `allowedHosts` bound the crawl by **hostname**, and hostname alone.
+A crawl seeded at `http://app.test:3000` will therefore follow and capture a link to `https://app.test` or to `http://app.test:8080`, because within one deployment an http→https or cross-port link is an ordinary internal link rather than an escape.
+This is deliberately wider than the gate on a scripted state's `url` and on `request` steps, which compares the full origin — scheme, host and port — because those two *drive* a URL rather than merely screenshot it.
+
 ## Scripted states
 
 A route crawler cannot capture a single-route application.

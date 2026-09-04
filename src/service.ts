@@ -793,6 +793,13 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 											return;
 										}
 
+										// Crawl scope is the **hostname** filter, not the
+										// `isAllowedOrigin` gate that guards a scripted state's
+										// URL and a `request` step: scheduling a route only
+										// navigates and screenshots it, and inside one
+										// deployment an http→https or cross-port link is
+										// ordinary. `--allowed-hosts` / `--include-subdomains`
+										// are what bound a crawl, and they are hostname filters.
 										if (
 											!hostFilters.hostMatchesFilters(
 												hostname,

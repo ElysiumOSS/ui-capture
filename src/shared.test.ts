@@ -18,6 +18,7 @@ import {
 	createHostFilterState,
 	getCaptureDir,
 	getRouteName,
+	isAllowedOrigin,
 	normalizeUrl,
 	stateResultKey,
 } from "./shared.js";
@@ -92,6 +93,106 @@ describe("createHostFilterState", () => {
 		f.hydrate("other.org", []);
 		expect(f.hostMatchesFilters("example.com", false)).toBe(false);
 		expect(f.hostMatchesFilters("other.org", false)).toBe(true);
+	});
+});
+
+describe("isAllowedOrigin", () => {
+	/** The gate as the service wires it: a real host filter, a real seed. */
+	const gate = (
+		candidate: string,
+		seed: string,
+		options?: {
+			readonly primaryHost?: string;
+			readonly allowedHosts?: readonly string[];
+			readonly includeSubdomains?: boolean;
+		},
+	) => {
+		const seedUrl = new URL(seed);
+		const filters = createHostFilterState();
+		filters.hydrate(
+			options?.primaryHost ?? seedUrl.hostname,
+			options?.allowedHosts ?? [],
+		);
+		return isAllowedOrigin(new URL(candidate), seedUrl, (hostname) =>
+			filters.hostMatchesFilters(hostname, options?.includeSubdomains ?? false),
+		);
+	};
+
+	it("allows the seed origin itself", () => {
+		expect(gate("https://app.test/dash", "https://app.test/")).toBe(true);
+	});
+
+	it("rejects a different scheme on the same host and port", () => {
+		// A downgrade is a different server, and for a `request` step it is a
+		// POST sent in the clear at one.
+		expect(gate("http://app.test/", "https://app.test/")).toBe(false);
+		expect(gate("https://app.test/", "http://app.test/")).toBe(false);
+	});
+
+	it("rejects a different port on the same host and scheme", () => {
+		expect(gate("http://app.test:4000/", "http://app.test:3000/")).toBe(false);
+		expect(
+			gate("http://127.0.0.1:42269/secret", "http://127.0.0.1:45179/"),
+		).toBe(false);
+	});
+
+	it("treats a scheme's default port as equal to writing it out", () => {
+		// `URL.port` normalizes to "" for 443/80, so neither direction needs
+		// special casing.
+		expect(gate("https://app.test:443/", "https://app.test/")).toBe(true);
+		expect(gate("https://app.test/", "https://app.test:443/")).toBe(true);
+		expect(gate("http://app.test:80/", "http://app.test/")).toBe(true);
+	});
+
+	it("rejects a host the filter does not allow, however matching the rest", () => {
+		expect(gate("https://evil.test/", "https://app.test/")).toBe(false);
+	});
+
+	it("defers the host decision to the filter, www and all", () => {
+		// `canonicalizeHost` strips `www.`, so the filter answers for both.
+		expect(gate("https://www.app.test/", "https://app.test/")).toBe(true);
+	});
+
+	it("honours --allowed-hosts, still at the seed's scheme and port", () => {
+		const allowedHosts = ["cdn.partner.io"];
+		expect(
+			gate("https://cdn.partner.io/x", "https://app.test/", { allowedHosts }),
+		).toBe(true);
+		// The extra host is allowed; a different port on it is still not.
+		expect(
+			gate("https://cdn.partner.io:8443/x", "https://app.test/", {
+				allowedHosts,
+			}),
+		).toBe(false);
+		expect(
+			gate("http://cdn.partner.io/x", "https://app.test/", { allowedHosts }),
+		).toBe(false);
+	});
+
+	it("follows --include-subdomains for the host half only", () => {
+		expect(gate("https://api.app.test/", "https://app.test/")).toBe(false);
+		expect(
+			gate("https://api.app.test/", "https://app.test/", {
+				includeSubdomains: true,
+			}),
+		).toBe(true);
+		// Subdomains widen the host, never the scheme or the port.
+		expect(
+			gate("https://api.app.test:8443/", "https://app.test/", {
+				includeSubdomains: true,
+			}),
+		).toBe(false);
+		expect(
+			gate("http://api.app.test/", "https://app.test/", {
+				includeSubdomains: true,
+			}),
+		).toBe(false);
+	});
+
+	it("rejects a non-http scheme that shares the seed's host", () => {
+		// `new URL("file:///etc/passwd").hostname` is "", but a data: or ws: URL
+		// can carry the seed's host and would otherwise differ only by scheme.
+		expect(gate("ws://app.test/", "http://app.test/")).toBe(false);
 	});
 });
 
