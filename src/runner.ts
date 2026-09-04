@@ -15,10 +15,12 @@
  * limitations under the License.
  *
  */
+import fs from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
-import type { CaptureConfigOverrides } from "./schemas.js";
+import type { CaptureConfigOverrides, CaptureState } from "./schemas.js";
 import { CaptureConfigLive, UICaptureService } from "./service.js";
+import { filterStates, parseStatesFile, statesUseRequests } from "./states.js";
 import { type ParsedArgs, parseArgs } from "./utils/args.js";
 
 const BOOLEAN_FLAGS = [
@@ -27,13 +29,16 @@ const BOOLEAN_FLAGS = [
 	"no-interactions",
 	"no-warmup",
 	"include-subdomains",
+	"skip-routes",
+	"allow-state-requests",
+	"fail-on-state-error",
 ];
 
 /**
  * Options whose value is allowed to look like a flag. Chromium switches start
  * with `--`, so the parser has to be told not to mistake them for options.
  */
-const VALUE_FLAGS = ["launch-args"];
+const VALUE_FLAGS = ["launch-args", "states", "state-filter"];
 
 export const USAGE = `Usage: ui-capture <url> [options]
 
@@ -54,6 +59,22 @@ Options:
                               (default: desktop:1920x1080,tablet:768x1024,mobile:375x667)
   --hide <sel,sel,...>        CSS selectors to hide before screenshotting
   --menu-selectors <sel,...>  Selectors to click before link discovery
+                              (this opens menus so links become discoverable;
+                              it is not a capture-state mechanism — see
+                              --states for that)
+  --states <path>             JSON file of named interaction scripts. Each
+                              named state is performed on a fresh page load
+                              and yields its own capture set, so a single-route
+                              app's dialogs and workspaces get captured too.
+  --state-filter <a,b,...>    Run only these named states (default: all)
+  --skip-routes               Capture only scripted states, not crawled routes
+  --state-timeout <ms>        Per-state budget covering navigation, script and
+                              capture (default: 30000; a state may override it)
+  --allow-state-requests      Permit request steps, which reach past the UI
+                              into the app's own backend. Off by default: a
+                              states file from a colleague should not be able
+                              to POST to your app because you ran the tool.
+  --fail-on-state-error       Exit non-zero when any scripted state failed
   --video                     Capture videos in addition to screenshots
   --video-duration <ms>       Video duration when --video (default: 10000)
   --no-interactions           Disable scripted scrolling during video
@@ -74,8 +95,11 @@ Examples:
   ui-capture https://example.com
   ui-capture https://example.com --video --max-depth 1 --concurrency 4
   ui-capture https://example.com --viewports desktop:1920x1080,mobile:390x844
+  ui-capture https://example.com --hide ".cookie-banner,#chat-widget"
   ui-capture https://example.com --color-scheme dark
   ui-capture https://example.com --launch-args "--enable-blink-features=CanvasDrawElement"
+  ui-capture http://localhost:5173 --max-depth 0 --states ./ui-capture.states.json
+  ui-capture http://localhost:5173 --states ./states.json --state-filter fleet-editor
 `;
 
 export const printUsage = (): void => {
@@ -140,6 +164,14 @@ const parseViewports = (
 export interface CliInvocation {
 	readonly url: string;
 	readonly overrides: CaptureConfigOverrides;
+	/**
+	 * Resolved path of a states file, if any. `buildInvocation` stays
+	 * synchronous and I/O-free — its whole unit-test surface depends on that —
+	 * so reading and parsing happens in `runFromArgs`, at the edge.
+	 */
+	readonly statesPath?: string;
+	readonly stateFilter?: ReadonlyArray<string>;
+	readonly failOnStateError: boolean;
 }
 
 export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
@@ -221,7 +253,62 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 	const launchArgs = parseLaunchArgs(opts["launch-args"]);
 	if (launchArgs) overrides.launchArgs = launchArgs;
 
-	return { url, overrides };
+	if (opts["skip-routes"] === true) overrides.captureRoutes = false;
+	if (opts["allow-state-requests"] === true) {
+		overrides.allowStateRequests = true;
+	}
+
+	const stateTimeout = parseInteger(opts["state-timeout"], "--state-timeout");
+	if (stateTimeout !== undefined) overrides.stateTimeout = stateTimeout;
+
+	const statesOpt = opts.states;
+	const statesPath =
+		typeof statesOpt === "string"
+			? path.resolve(process.cwd(), statesOpt)
+			: undefined;
+	const stateFilter = parseList(opts["state-filter"]);
+
+	if (statesPath === undefined && stateFilter) {
+		throw new Error("--state-filter requires --states.");
+	}
+	if (statesPath === undefined && opts["skip-routes"] === true) {
+		throw new Error(
+			"--skip-routes requires --states; nothing would be captured.",
+		);
+	}
+
+	return {
+		url,
+		overrides,
+		...(statesPath !== undefined ? { statesPath } : {}),
+		...(stateFilter ? { stateFilter } : {}),
+		failOnStateError: opts["fail-on-state-error"] === true,
+	};
+};
+
+/**
+ * Reads and parses a states file. Kept separate from `buildInvocation` so flag
+ * parsing stays pure, and separate from the service so a decode failure is
+ * reported before Chromium launches.
+ */
+const loadStates = async (
+	invocation: CliInvocation,
+): Promise<ReadonlyArray<CaptureState>> => {
+	if (invocation.statesPath === undefined) return [];
+	const contents = await fs.readFile(invocation.statesPath, "utf8");
+	const parsed = parseStatesFile(contents, invocation.statesPath);
+	const selected = invocation.stateFilter
+		? filterStates(parsed, invocation.stateFilter)
+		: parsed;
+	if (
+		statesUseRequests(selected) &&
+		invocation.overrides.allowStateRequests !== true
+	) {
+		throw new Error(
+			"This states file contains `request` steps, which reach past the UI into the app's own backend. Re-run with --allow-state-requests if that is what you want.",
+		);
+	}
+	return selected;
 };
 
 export const parseCliArgs = (argv: readonly string[]): ParsedArgs =>
@@ -245,16 +332,41 @@ export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
 		process.exit(1);
 	}
 
+	let states: ReadonlyArray<CaptureState>;
+	try {
+		states = await loadStates(invocation);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		console.error("\nRun with --help for usage.");
+		process.exit(1);
+	}
+
+	const overrides: CaptureConfigOverrides =
+		states.length > 0
+			? { ...invocation.overrides, states }
+			: invocation.overrides;
+
 	const program = Effect.gen(function* () {
 		const service = yield* UICaptureService;
 		return yield* service.captureWebsite(invocation.url);
 	}).pipe(
 		Effect.provide(UICaptureService.Default),
-		Effect.provide(CaptureConfigLive(invocation.overrides)),
+		Effect.provide(CaptureConfigLive(overrides)),
 	);
 
 	try {
-		await Effect.runPromise(program);
+		const results = await Effect.runPromise(program);
+		const failedStates = Array.from(results.values()).filter(
+			(result) => result.stateStatus === "failed",
+		);
+		if (invocation.failOnStateError && failedStates.length > 0) {
+			console.error(
+				`\n${failedStates.length} scripted state(s) failed: ${failedStates
+					.map((result) => result.state)
+					.join(", ")}`,
+			);
+			process.exit(1);
+		}
 	} catch (error) {
 		console.error(error);
 		process.exit(1);

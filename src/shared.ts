@@ -16,6 +16,7 @@
  *
  */
 import { execFile, spawn } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 import { Effect, Schedule } from "effect";
 import { FileSystemError } from "./errors.js";
@@ -27,11 +28,24 @@ export type RouteTask = {
 	readonly normalizedUrl: string;
 };
 
+/**
+ * One scripted state, queued as a first-class peer of a route rather than a
+ * phase bolted onto the end of a crawl: same queue, same worker pool, same
+ * `--concurrency`, same results map, same report.
+ */
+export type StateTask = {
+	readonly type: "state";
+	readonly url: string;
+	readonly stateName: string;
+	readonly normalizedUrl: string;
+	readonly resultKey: string;
+};
+
 export type ShutdownTask = {
 	readonly type: "shutdown";
 };
 
-export type QueueTask = RouteTask | ShutdownTask;
+export type QueueTask = RouteTask | StateTask | ShutdownTask;
 
 export const ShutdownSignal: ShutdownTask = { type: "shutdown" } as const;
 
@@ -209,4 +223,29 @@ export const getRouteName = (url: string): string => {
 	} catch {
 		return "invalid-url";
 	}
+};
+
+/**
+ * Keys a scripted-state result so it can never overwrite the route result for
+ * the same URL, nor another state's result on that URL.
+ */
+export const stateResultKey = (url: string, stateName: string): string =>
+	`${normalizeUrl(url)}::state=${stateName}`;
+
+/**
+ * Where one capture unit's `screenshots/` and `videos/` live.
+ *
+ * A scripted state nests under the route it belongs to
+ * (`<route>/states/<name>/`) rather than encoding both axes in one slug: the
+ * route/state relationship stays visible in the tree, and a future capture
+ * axis does not have to fight a separator convention. Everything downstream
+ * treats this as an opaque prefix.
+ */
+export const getCaptureDir = (
+	outputDir: string,
+	url: string,
+	stateName?: string,
+): string => {
+	const routeDir = path.join(outputDir, getRouteName(url));
+	return stateName ? path.join(routeDir, "states", stateName) : routeDir;
 };

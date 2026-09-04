@@ -256,3 +256,171 @@ describe("USAGE launch args", () => {
 		expect(USAGE).toContain("--launch-args");
 	});
 });
+
+describe("buildInvocation scripted-state flags", () => {
+	it("leaves every state field untouched when no flag is passed", () => {
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.statesPath).toBeUndefined();
+		expect(inv.stateFilter).toBeUndefined();
+		expect(inv.failOnStateError).toBe(false);
+		expect(inv.overrides.states).toBeUndefined();
+		expect(inv.overrides.captureRoutes).toBeUndefined();
+		expect(inv.overrides.stateTimeout).toBeUndefined();
+		expect(inv.overrides.allowStateRequests).toBeUndefined();
+	});
+
+	it("resolves --states against cwd and keeps parsing I/O-free", () => {
+		const inv = buildInvocation(
+			parseCliArgs(["https://example.com", "--states", "./states.json"]),
+		);
+		expect(inv.statesPath).toBe(path.resolve(process.cwd(), "states.json"));
+		expect(inv.overrides.states).toBeUndefined();
+	});
+
+	it("carries the state flags into overrides", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--states",
+				"./states.json",
+				"--state-filter",
+				"fleet-editor, spawn-dialog",
+				"--skip-routes",
+				"--state-timeout",
+				"45000",
+				"--allow-state-requests",
+				"--fail-on-state-error",
+			]),
+		);
+		expect(inv.stateFilter).toEqual(["fleet-editor", "spawn-dialog"]);
+		expect(inv.overrides.captureRoutes).toBe(false);
+		expect(inv.overrides.stateTimeout).toBe(45000);
+		expect(inv.overrides.allowStateRequests).toBe(true);
+		expect(inv.failOnStateError).toBe(true);
+	});
+
+	it("rejects flags that would capture nothing or filter nothing", () => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs(["https://example.com", "--state-filter", "a"]),
+			),
+		).toThrow(/--state-filter requires --states/);
+		expect(() =>
+			buildInvocation(parseCliArgs(["https://example.com", "--skip-routes"])),
+		).toThrow(/--skip-routes requires --states/);
+	});
+});
+
+describe("USAGE scripted states", () => {
+	it("documents every scripted-state flag", () => {
+		expect(USAGE).toContain("--states <path>");
+		expect(USAGE).toContain("--state-filter");
+		expect(USAGE).toContain("--skip-routes");
+		expect(USAGE).toContain("--state-timeout");
+		expect(USAGE).toContain("--allow-state-requests");
+		expect(USAGE).toContain("--fail-on-state-error");
+	});
+});
+
+describe("buildInvocation scripted-state flags — parsing edge cases", () => {
+	it("rejects a non-numeric --state-timeout", () => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs(["https://example.com", "--state-timeout", "soon"]),
+			),
+		).toThrow(/--state-timeout must be an integer/);
+	});
+
+	it("accepts the --states=<path> form", () => {
+		const inv = buildInvocation(
+			parseCliArgs(["https://example.com", "--states=./ui.states.json"]),
+		);
+		expect(inv.statesPath).toBe(path.resolve(process.cwd(), "ui.states.json"));
+	});
+
+	it("treats a states path that looks like a flag as a value", () => {
+		// --states is a VALUE_FLAG, so the next token is swallowed verbatim
+		// rather than parsed as another option.
+		const inv = buildInvocation(
+			parseCliArgs(["https://example.com", "--states", "--odd-name.json"]),
+		);
+		expect(inv.statesPath).toBe(path.resolve(process.cwd(), "--odd-name.json"));
+	});
+
+	it("keeps boolean state flags from swallowing the following flag", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--skip-routes",
+				"--allow-state-requests",
+				"--fail-on-state-error",
+				"--states",
+				"s.json",
+			]),
+		);
+		expect(inv.overrides.captureRoutes).toBe(false);
+		expect(inv.overrides.allowStateRequests).toBe(true);
+		expect(inv.failOnStateError).toBe(true);
+		expect(inv.statesPath).toBe(path.resolve(process.cwd(), "s.json"));
+	});
+
+	it("permits the request gate and the CI gate without a states file", () => {
+		// Neither changes what is captured on its own, so neither is worth an
+		// error; only --state-filter and --skip-routes are meaningless alone.
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--allow-state-requests",
+				"--fail-on-state-error",
+			]),
+		);
+		expect(inv.overrides.allowStateRequests).toBe(true);
+		expect(inv.failOnStateError).toBe(true);
+		expect(inv.overrides.captureRoutes).toBeUndefined();
+	});
+
+	it("trims and drops empty entries in --state-filter", () => {
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--states",
+				"s.json",
+				"--state-filter",
+				" a , ,b ",
+			]),
+		);
+		expect(inv.stateFilter).toEqual(["a", "b"]);
+	});
+});
+
+describe("buildInvocation backwards compatibility", () => {
+	it("adds no scripted-state key to overrides for a pre-feature invocation", () => {
+		// The feature is additive: a call written before it existed must produce
+		// byte-identical config, which means the override object must not gain
+		// keys that would shadow a CaptureConfig default.
+		const inv = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--video",
+				"--max-depth",
+				"1",
+				"--concurrency",
+				"4",
+				"--viewports",
+				"desktop:1920x1080",
+				"--no-warmup",
+			]),
+		);
+		const stateKeys = [
+			"states",
+			"stateTimeout",
+			"captureRoutes",
+			"allowStateRequests",
+		];
+		for (const key of stateKeys) {
+			expect(Object.hasOwn(inv.overrides, key)).toBe(false);
+		}
+		expect(inv.statesPath).toBeUndefined();
+		expect(inv.stateFilter).toBeUndefined();
+	});
+});

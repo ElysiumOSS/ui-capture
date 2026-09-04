@@ -37,6 +37,15 @@ export interface CaptureVideoConfig {
 	};
 	/** Must match the screenshot context, or a run's stills and video disagree. */
 	readonly colorScheme: "light" | "dark" | "no-preference";
+	/**
+	 * Replays a scripted state inside the recording context.
+	 *
+	 * Without it the video context would navigate and record the *unscripted*
+	 * boot view while the stills show the scripted state — the two silently
+	 * disagreeing. Undefined for route captures, so existing behaviour is
+	 * untouched.
+	 */
+	readonly prepare?: (page: Page) => Effect.Effect<void, CaptureError>;
 }
 
 export const captureVideoForViewport = (
@@ -103,6 +112,10 @@ export const captureVideoForViewport = (
 		}).pipe(Effect.retry(navigationRetryPolicy));
 
 		yield* Effect.sleep(cfg.waitTime);
+
+		if (cfg.prepare) {
+			yield* cfg.prepare(videoPage);
+		}
 
 		if (cfg.videoOptions.interactions) {
 			const scrollSteps = 5;

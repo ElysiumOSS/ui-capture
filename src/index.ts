@@ -21,6 +21,8 @@ export {
 	BrowserError,
 	CaptureError,
 	FileSystemError,
+	StateCaptureError,
+	StateDefinitionError,
 } from "./errors.js";
 // CLI runner (also useful for embedding the CLI in another tool)
 export { buildInvocation, parseCliArgs, runFromArgs, USAGE } from "./runner.js";
@@ -30,11 +32,24 @@ export {
 	type CaptureConfigOverrides,
 	CaptureReport,
 	CaptureResult,
+	CaptureState,
+	type CaptureStateInput,
+	CaptureStep,
+	ClickStep,
 	createCaptureConfig,
+	FillStep,
+	PressStep,
+	ReloadStep,
+	RequestStep,
 	ScreenshotPaths,
+	SelectStep,
+	StateStatus,
+	StatesFile,
 	VideoOptions,
 	VideoQualityPaths,
 	ViewportConfig,
+	WaitForStep,
+	WaitStep,
 } from "./schemas.js";
 // Service / DI
 // Default export for convenience
@@ -44,3 +59,13 @@ export {
 	UICaptureService,
 	UICaptureService as default,
 } from "./service.js";
+// Scripted states: parsing, chain resolution and pre-launch validation
+export {
+	filterStates,
+	MAX_STATE_CHAIN_DEPTH,
+	parseStatesFile,
+	type ResolvedState,
+	resolveStateSteps,
+	statesUseRequests,
+	validateStates,
+} from "./states.js";

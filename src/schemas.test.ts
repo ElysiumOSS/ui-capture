@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	CaptureConfig,
+	CaptureState,
 	createCaptureConfig,
 	VideoOptions,
 	ViewportConfig,
@@ -113,5 +114,38 @@ describe("createCaptureConfig launchArgs", () => {
 			"--enable-blink-features=CanvasDrawElement",
 		]);
 		expect(cfg.launchArgs).not.toBe(input);
+	});
+});
+
+describe("createCaptureConfig scripted states", () => {
+	it("defaults to the pre-feature behaviour exactly", () => {
+		const cfg = createCaptureConfig();
+		expect(cfg.states).toEqual([]);
+		expect(cfg.captureRoutes).toBe(true);
+		expect(cfg.stateTimeout).toBe(30000);
+		expect(cfg.allowStateRequests).toBe(false);
+	});
+
+	it("normalises plain-object state input into CaptureState instances", () => {
+		const cfg = createCaptureConfig({
+			states: [
+				{
+					name: "spawn-dialog",
+					steps: [{ kind: "click", selector: "#spawn" }],
+				},
+			],
+		});
+		expect(cfg.states[0]).toBeInstanceOf(CaptureState);
+		expect(cfg.states[0]?.steps[0]).toMatchObject({
+			kind: "click",
+			optional: false,
+		});
+		expect(cfg.states[0]?.allowVideoReplay).toBe(false);
+	});
+
+	it("rejects a state name that could not be a directory", () => {
+		expect(() =>
+			createCaptureConfig({ states: [{ name: "Spawn Dialog", steps: [] }] }),
+		).toThrow();
 	});
 });
