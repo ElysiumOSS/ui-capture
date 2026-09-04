@@ -1005,8 +1005,135 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		).toEqual(["captured", "failed", "failed"]);
 		// The assertion that matters is this one, not the absence of an error:
 		// every context the run opened — worker, state and video — was closed
-		// before the browser was.
+		// before the browser was. Note what this cannot reach on its own: every
+		// context here got its page, so it holds equally for an acquire that
+		// takes context and page together. The two tests below inject the one
+		// stimulus that tells those apart.
 		expect(liveAtClose).toEqual([0]);
+	}, 120_000);
+
+	/**
+	 * Runs `body` with one fault injected at the Playwright boundary: the
+	 * `failAt`-th `context.newPage()` of the run rejects, once.
+	 *
+	 * The fault goes into Playwright, never into the service: every context is
+	 * a real Chromium context, and `browser.contexts()` is Playwright's own
+	 * list of the ones still open, so a context counted here is a context that
+	 * genuinely was not closed. `contextsAtClose` is sampled at the last
+	 * moment it can still be non-zero — after the run has finished with the
+	 * browser, before the browser is torn down, which is the only window in
+	 * which a stranded context is distinguishable from a closed one.
+	 *
+	 * A rejecting `newPage` is the one stimulus that separates "acquire the
+	 * context, then acquire the page" from "acquire both in one step": only
+	 * the first registers a release for the context before the page can throw.
+	 * Nothing else fails between the two acquisitions.
+	 */
+	const withNewPageFailingAt = async (
+		failAt: number,
+		body: () => Promise<unknown>,
+	) => {
+		const realLaunch = chromium.launch;
+		let pagesRequested = 0;
+		let injected = 0;
+		const contextsAtClose: number[] = [];
+		let failure: unknown;
+
+		chromium.launch = async (options) => {
+			const browser = await realLaunch.call(chromium, options);
+			const realNewContext = browser.newContext.bind(browser);
+			browser.newContext = async (contextOptions) => {
+				const context = await realNewContext(contextOptions);
+				const realNewPage = context.newPage.bind(context);
+				context.newPage = async () => {
+					pagesRequested += 1;
+					if (pagesRequested === failAt) {
+						injected += 1;
+						throw new Error("injected: context.newPage() rejected");
+					}
+					return await realNewPage();
+				};
+				return context;
+			};
+			const realClose = browser.close.bind(browser);
+			browser.close = async (closeOptions?: { reason?: string }) => {
+				contextsAtClose.push(browser.contexts().length);
+				await realClose(closeOptions);
+			};
+			return browser;
+		};
+
+		try {
+			await body();
+		} catch (error) {
+			failure = error;
+		} finally {
+			chromium.launch = realLaunch;
+		}
+
+		return { injected, contextsAtClose, failure };
+	};
+
+	it("closes a state's context when the page inside it cannot be opened", async () => {
+		// The state path opens a context and then a page inside it. Effect
+		// registers a release only once its acquire has *completed*, so an
+		// acquire that took both stranded the context for the rest of the run
+		// whenever `newPage` rejected — a live browser context per bad state,
+		// on the one path where something was already going wrong.
+		const dir = await outDir("state-page-fails");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "page-never-opens",
+				steps: [{ kind: "waitFor", selector: "[data-app-ready]" }],
+			},
+		]);
+
+		// With one worker and no routes, page 1 is the worker's own and page 2
+		// is the state's. `injected` is asserted below so that an ordering this
+		// test got wrong fails it rather than quietly passing it.
+		const { injected, contextsAtClose, failure } = await withNewPageFailingAt(
+			2,
+			() =>
+				capture(baseUrl, {
+					...baseConfig(dir),
+					captureRoutes: false,
+					states,
+				}),
+		);
+
+		expect(injected).toBe(1);
+		expect(failure).toBeUndefined();
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.state).toBe("page-never-opens");
+		expect(result.stateStatus).toBe("failed");
+		expect(result.error).toContain("failed to create a page");
+		// The claim: the context that could not get a page was closed anyway.
+		expect(contextsAtClose).toEqual([0]);
+	}, 120_000);
+
+	it("closes a worker's context when the page inside it cannot be opened", async () => {
+		// The same split acquire in the worker pool, where the stranded context
+		// outlived a whole run rather than a single state.
+		const dir = await outDir("worker-page-fails");
+
+		// Page 1 is the first worker's, and there is only one worker.
+		const { injected, contextsAtClose, failure } = await withNewPageFailingAt(
+			1,
+			() =>
+				capture(baseUrl, {
+					...baseConfig(dir),
+					maxDepth: 0,
+				}),
+		);
+
+		expect(injected).toBe(1);
+		// A worker that cannot open a page has nothing to crawl with, so the run
+		// fails — the point is that it does not also leak.
+		expect(failure).toBeDefined();
+		expect(String(failure)).toContain("Failed to create page");
+		expect(contextsAtClose).toEqual([0]);
 	}, 120_000);
 
 	it("captures a state under the shipped defaults with video, without timing out", async () => {
