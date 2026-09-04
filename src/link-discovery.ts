@@ -89,6 +89,15 @@ export interface LinkDiscoveryTools {
 }
 
 export const createLinkDiscoveryTools = (options: {
+	/**
+	 * Whether a discovered link's **hostname** is in crawl scope.
+	 *
+	 * Hostname, not origin: this is the crawl filter, not the `isAllowedOrigin`
+	 * gate that guards scripted-state URLs and `request` steps. Following a link
+	 * only navigates and screenshots, and inside one deployment an http→https or
+	 * cross-port link is ordinary, so the scheme and port are deliberately not
+	 * compared here. See the note on `isAllowedOrigin` in `shared.ts`.
+	 */
 	readonly hostMatchesFilters: (hostname: string) => boolean;
 	readonly menuInteractionSelectors: ReadonlyArray<string>;
 }): LinkDiscoveryTools => {

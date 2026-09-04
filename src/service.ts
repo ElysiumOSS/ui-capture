@@ -19,7 +19,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Context, Effect, Layer, Option, Queue, Ref } from "effect";
 import { type Browser, chromium, type Page } from "playwright";
-import { BrowserError, CaptureError, FileSystemError } from "./errors.js";
+import {
+	BrowserError,
+	CaptureError,
+	FileSystemError,
+	StateCaptureError,
+	type StateDefinitionError,
+} from "./errors.js";
 import { createLinkDiscoveryTools } from "./link-discovery.js";
 import { generateReports } from "./report.js";
 import {
@@ -33,14 +39,25 @@ import {
 } from "./schemas.js";
 import { captureScreenshots } from "./screenshot.js";
 import {
+	closeQuietly,
 	createHostFilterState,
+	getCaptureDir,
 	getRouteName,
+	isAllowedOrigin,
 	navigationRetryPolicy,
 	normalizeUrl,
 	type QueueTask,
 	type RouteTask,
 	ShutdownSignal,
+	type StateTask,
+	stateResultKey,
 } from "./shared.js";
+import {
+	createScriptedStateRunner,
+	INITIAL_STEP_PROGRESS,
+	type StepProgress,
+} from "./state-script.js";
+import { type ResolvedState, validateStates } from "./states.js";
 import { captureVideoForViewport } from "./video.js";
 import { performWarmupScroll } from "./warmup.js";
 
@@ -54,41 +71,83 @@ const DEFAULT_LAUNCH_ARGS = [
 	"--disable-dev-shm-usage",
 ] as const;
 
+/**
+ * Playwright's own ceiling on one `goto`, named here because the state budget
+ * has to exceed it: a budget below this can be spent entirely on a slow first
+ * load, leaving the script none of it.
+ */
+const STATE_NAVIGATION_TIMEOUT_MS = 30000;
+
 export class CaptureConfigTag extends Context.Tag("CaptureConfig")<
 	CaptureConfigTag,
 	CaptureConfig
 >() {}
 
+/** One viewport's video outcome: what was recorded, or why nothing was. */
+interface ViewportVideoOutcome {
+	readonly paths: Option.Option<VideoQualityPaths>;
+	readonly error: Option.Option<string>;
+}
+
+const NO_VIDEO_CAPTURED: ViewportVideoOutcome = {
+	paths: Option.none(),
+	error: Option.none(),
+};
+
+/**
+ * Why a state that reached the end of its viewport loop with nothing to show
+ * for it is a failure rather than a capture.
+ *
+ * Exported so the test that bypasses the schema's `minItems(1)` guard asserts
+ * on the same string the service reports, rather than on a copy of it.
+ */
+export const EMPTY_STATE_CAPTURE_MESSAGE =
+	"no screenshots were captured: the state resolved to zero viewports, and a state that captured nothing must not be reported as captured";
+
+/** A one-line, report-ready rendering of any failure this service can raise. */
+const formatCaptureFailure = (error: unknown): string => {
+	if (error instanceof FileSystemError) {
+		return `${error.operation} failed for ${error.path}`;
+	}
+	if (error instanceof Error && error.message) return error.message;
+	return String(error);
+};
+
+/**
+ * Creates one capture unit's directory tree. `captureDir` is an opaque prefix:
+ * a crawled route's own directory, or `<route>/states/<name>/` for a scripted
+ * state.
+ */
 const createDirectories = (
-	routeDir: string,
+	captureDir: string,
 	captureVideo: boolean,
 ): Effect.Effect<void, FileSystemError> =>
 	Effect.tryPromise({
 		try: async () => {
-			await fs.mkdir(path.join(routeDir, "screenshots", "png", "history"), {
+			await fs.mkdir(path.join(captureDir, "screenshots", "png", "history"), {
 				recursive: true,
 			});
-			await fs.mkdir(path.join(routeDir, "screenshots", "webp", "history"), {
+			await fs.mkdir(path.join(captureDir, "screenshots", "webp", "history"), {
 				recursive: true,
 			});
-			await fs.mkdir(path.join(routeDir, "screenshots", "jpg", "history"), {
+			await fs.mkdir(path.join(captureDir, "screenshots", "jpg", "history"), {
 				recursive: true,
 			});
 			if (captureVideo) {
-				await fs.mkdir(path.join(routeDir, "videos", "high-quality"), {
+				await fs.mkdir(path.join(captureDir, "videos", "high-quality"), {
 					recursive: true,
 				});
-				await fs.mkdir(path.join(routeDir, "videos", "medium-quality"), {
+				await fs.mkdir(path.join(captureDir, "videos", "medium-quality"), {
 					recursive: true,
 				});
-				await fs.mkdir(path.join(routeDir, "videos", "low-quality"), {
+				await fs.mkdir(path.join(captureDir, "videos", "low-quality"), {
 					recursive: true,
 				});
 			}
 		},
 		catch: (error) =>
 			new FileSystemError({
-				path: routeDir,
+				path: captureDir,
 				operation: "mkdir",
 				cause: error,
 			}),
@@ -103,6 +162,12 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 			let browser: Browser | null = null;
 			const processedRoutes = new Set<string>();
 			const hostFilters = createHostFilterState();
+			// Hydrated beside the host filters, and for the same reason: the seed
+			// is not known until `captureWebsite` is called, but the runtime
+			// `request` gate needs it to compare scheme and port the way the
+			// pre-launch pass does. Null until then, which denies rather than
+			// allows.
+			let seedUrl: URL | null = null;
 
 			const initialize = Effect.tryPromise({
 				try: async () => {
@@ -145,15 +210,57 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 					menuInteractionSelectors: cfg.menuInteractionSelectors,
 				});
 
+			// Link discovery opens menus so links become *discoverable*; the state
+			// runner performs a named script so a state becomes *capturable*. Two
+			// page-manipulation toolkits from one config, neither owning the other.
+			const { runStateScript, checkPrecondition } = createScriptedStateRunner({
+				// The gate that actually decides whether a `request` step may be
+				// sent. `validateStates` checked request origins before launch, but
+				// against each state's configured URL; a script that navigates
+				// first resolves its paths against an origin that pass never saw,
+				// so the same `isAllowedOrigin` comparison is handed to the driver
+				// to apply to the URL each step resolves to at the moment it runs.
+				// Same comparison, same seed: a states file that validated cannot
+				// be widened at runtime, and a run cannot abort on something the
+				// runtime would have allowed.
+				isAllowedRequestUrl: (candidate) =>
+					seedUrl !== null &&
+					isAllowedOrigin(candidate, seedUrl, (hostname) =>
+						hostFilters.hostMatchesFilters(hostname, cfg.includeSubdomains),
+					),
+				preconditionTimeoutMs: cfg.preconditionTimeout,
+			});
+
+			/**
+			 * What a scripted state changes about a capture: where it lands, which
+			 * viewports it is valid at, whether video is recorded, and how the video
+			 * context reaches the same state the stills show.
+			 */
+			interface StateCaptureContext {
+				readonly name: string;
+				readonly viewports: ReadonlyArray<ViewportConfig>;
+				readonly captureVideo: boolean;
+				readonly prepare: (page: Page) => Effect.Effect<void, CaptureError>;
+			}
+
 			const capturePage = (
 				page: Page,
 				url: string,
+				stateContext?: StateCaptureContext,
 			): Effect.Effect<CaptureResult, CaptureError | FileSystemError> =>
 				Effect.gen(function* () {
 					const route = getRouteName(url);
-					const routeDir = path.join(cfg.outputDir, route);
+					const captureDir = getCaptureDir(
+						cfg.outputDir,
+						url,
+						stateContext?.name,
+					);
+					const viewports = stateContext?.viewports ?? cfg.viewports;
+					const wantVideo = stateContext
+						? stateContext.captureVideo
+						: cfg.captureVideo;
 
-					yield* createDirectories(routeDir, cfg.captureVideo);
+					yield* createDirectories(captureDir, wantVideo);
 					yield* Effect.tryPromise({
 						try: () => page.waitForLoadState("networkidle"),
 						catch: (error) =>
@@ -184,7 +291,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 					const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 
 					const screenshotResults = yield* Effect.all(
-						cfg.viewports.map((viewport: ViewportConfig) =>
+						viewports.map((viewport: ViewportConfig) =>
 							Effect.gen(function* () {
 								console.log(
 									`  Capturing ${viewport.name} (${viewport.width}x${viewport.height})`,
@@ -192,7 +299,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 								const screenshots = yield* captureScreenshots(
 									page,
 									viewport,
-									routeDir,
+									captureDir,
 									timestamp,
 									{
 										ffmpegPath: cfg.ffmpegPath,
@@ -200,26 +307,52 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 									},
 								);
 
-								const videos =
-									cfg.captureVideo && browser
-										? Option.some(
-												yield* captureVideoForViewport(
-													browser,
-													page,
-													viewport,
-													routeDir,
-													timestamp,
-													{
-														waitTime: cfg.waitTime,
-														ffmpegPath: cfg.ffmpegPath,
-														videoOptions: cfg.videoOptions,
-														colorScheme: cfg.colorScheme,
-													},
-												),
-											)
-										: Option.none();
+								// This viewport's screenshots are on disk by now. A
+								// recording that fails afterwards — the replay script, a
+								// dead context, ffmpeg — must not un-write them or turn a
+								// capture that produced files into one that reports nothing.
+								const video = yield* wantVideo && browser
+									? captureVideoForViewport(
+											browser,
+											viewport,
+											captureDir,
+											timestamp,
+											{
+												waitTime: cfg.waitTime,
+												ffmpegPath: cfg.ffmpegPath,
+												videoOptions: cfg.videoOptions,
+												colorScheme: cfg.colorScheme,
+												// Where this capture began, not `page.url()`: a
+												// scripted state has already driven the page, so
+												// its current URL is where the script *ended* —
+												// replaying from there records a different run
+												// than the stills show.
+												startUrl: url,
+												...(stateContext
+													? { prepare: stateContext.prepare }
+													: {}),
+											},
+										).pipe(
+											Effect.map(
+												(paths): ViewportVideoOutcome => ({
+													paths: Option.some(paths),
+													error: Option.none(),
+												}),
+											),
+											Effect.catchAll((error) => {
+												const message = formatCaptureFailure(error);
+												console.warn(
+													`  ! Video failed for ${viewport.name}, screenshots kept: ${message}`,
+												);
+												return Effect.succeed<ViewportVideoOutcome>({
+													paths: Option.none(),
+													error: Option.some(`${viewport.name}: ${message}`),
+												});
+											}),
+										)
+									: Effect.succeed(NO_VIDEO_CAPTURED);
 
-								return [viewport.name, { screenshots, videos }] as const;
+								return [viewport.name, { screenshots, video }] as const;
 							}),
 						),
 						{ concurrency: 1 },
@@ -230,16 +363,45 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 
 					for (const [name, data] of screenshotResults) {
 						screenshots[name] = data.screenshots;
-						if (Option.isSome(data.videos)) {
-							videos[name] = data.videos.value;
+						if (Option.isSome(data.video.paths)) {
+							videos[name] = data.video.paths.value;
 						}
+					}
+
+					const videoErrors = screenshotResults.flatMap(([, data]) =>
+						Option.isSome(data.video.error) ? [data.video.error.value] : [],
+					);
+
+					// Defense in depth for the schema's `minItems(1)` on a state's
+					// `viewports`. The status is decided here, so it is here that
+					// "the viewport loop ended" must not be mistaken for "something
+					// was captured": an empty loop leaves `screenshots` empty and
+					// used to be reported `captured` with nothing in it — a green
+					// state, on disk as an empty directory. Whatever lets a state
+					// reach this point with no viewports — a relaxed schema, a
+					// filter that intersects to nothing, a future capture axis —
+					// this fails it instead. `CaptureError` is the channel the
+					// caller already maps to `stateStatus: "failed"`.
+					if (stateContext && Object.keys(screenshots).length === 0) {
+						return yield* Effect.fail(
+							new CaptureError({
+								url,
+								message: EMPTY_STATE_CAPTURE_MESSAGE,
+								cause: null,
+							}),
+						);
 					}
 
 					return new CaptureResult({
 						url,
 						route,
+						state: stateContext?.name,
+						// Screenshots landed, so this is a capture that succeeded and
+						// names what it lost — not a failure that kept nothing.
+						stateStatus: stateContext ? "captured" : undefined,
 						screenshots,
 						videos: Object.keys(videos).length > 0 ? videos : undefined,
+						videoErrors: videoErrors.length > 0 ? videoErrors : undefined,
 						timestamp: Date.now(),
 					});
 				});
@@ -296,16 +458,303 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 					}
 				});
 
+			/**
+			 * A scripted state is a capture leaf: it never feeds the crawl frontier,
+			 * and it runs in its **own** browser context rather than on the worker's
+			 * long-lived page.
+			 *
+			 * `page.goto` clears neither cookies nor `localStorage`, so reusing the
+			 * worker page would let state N inherit state N-1's client storage and
+			 * make the determinism guarantee aspirational rather than true. Roughly
+			 * 100ms against a multi-second capture buys real isolation.
+			 *
+			 * Every runtime failure is recorded as a `CaptureResult` and swallowed
+			 * here, so the worker pool cannot be disturbed by a bad script.
+			 */
+			const processStateTask = (
+				task: StateTask,
+				resolved: ResolvedState,
+				results: Map<string, CaptureResult>,
+				workerLabel: string,
+			): Effect.Effect<void> =>
+				Effect.gen(function* () {
+					const { state, steps } = resolved;
+					const budgetMs = state.timeoutMs ?? cfg.stateTimeout;
+					console.log(
+						`\n[Worker ${workerLabel}] [State ${state.name}] Capturing: ${task.url}`,
+					);
+
+					const progress = yield* Ref.make(INITIAL_STEP_PROGRESS);
+
+					// The script runs once and the viewport loop resizes afterwards, so
+					// a state whose UI unmounts below a breakpoint must say which
+					// viewports it is valid at rather than silently shooting the boot
+					// view and recording it as success.
+					const stateViewports = state.viewports
+						? cfg.viewports.filter((viewport) =>
+								state.viewports?.includes(viewport.name),
+							)
+						: cfg.viewports;
+
+					// Both halves read the *resolved* state: `extends` prepends the
+					// parent's steps, so a child inherits the `request` step that
+					// suppresses video, and must inherit the opt-out with it.
+					const usesRequests = steps.some((step) => step.kind === "request");
+					const stateCaptureVideo =
+						cfg.captureVideo && (!usesRequests || resolved.allowVideoReplay);
+					if (cfg.captureVideo && !stateCaptureVideo) {
+						console.log(
+							`  ! Skipping video for "${state.name}": recording replays the script in a second context, so a non-idempotent request step would seed twice and the video would disagree with the stills (set allowVideoReplay to override)`,
+						);
+					}
+
+					const stateFailure = (message: string, cause: unknown) =>
+						new StateCaptureError({
+							state: state.name,
+							stepIndex: -1,
+							stepKind: "state",
+							target: task.url,
+							message: `state "${state.name}" failed: ${message}`,
+							cause,
+						});
+
+					const prepare = (videoPage: Page) =>
+						runStateScript(videoPage, state.name, steps, progress).pipe(
+							Effect.mapError(
+								(error) =>
+									new CaptureError({
+										url: task.url,
+										message: error.message,
+										cause: error,
+									}),
+							),
+						);
+
+					/** Names what the state was doing when its budget expired. */
+					const timedOutDoing = (at: StepProgress): string => {
+						switch (at.phase) {
+							case "navigate":
+								return `while loading ${task.url}`;
+							case "precondition":
+								return `while probing precondition "${at.target}"`;
+							case "settle":
+								return `while settling after step ${at.index} (${at.kind} "${at.target}")`;
+							case "done":
+								return "after its last step, with the script already complete";
+							default:
+								return `on step ${at.index} (${at.kind} "${at.target}")`;
+						}
+					};
+
+					/**
+					 * Everything `budgetMs` covers, and nothing else: the navigation,
+					 * the `precondition` probe and the script — the part a wrong
+					 * selector can hang on forever.
+					 *
+					 * Capture is deliberately outside it. Screenshots and video are
+					 * bounded by their own timeouts and by `--video-duration` × the
+					 * viewport count, and folding them into one whole-state budget made
+					 * the default unsatisfiable: with `--video` on, a single state
+					 * could not fit any default budget, so every state timed out.
+					 */
+					const reachState = (
+						page: Page,
+					): Effect.Effect<"ready" | "skipped", StateCaptureError> =>
+						Effect.gen(function* () {
+							yield* Ref.set<StepProgress>(progress, {
+								index: -1,
+								kind: "navigate",
+								target: task.url,
+								phase: "navigate",
+							});
+
+							yield* Effect.tryPromise({
+								try: () =>
+									page
+										.goto(task.url, {
+											waitUntil: "networkidle",
+											timeout: STATE_NAVIGATION_TIMEOUT_MS,
+										})
+										.then(() => undefined),
+								catch: (error) =>
+									stateFailure(`failed to navigate to ${task.url}`, error),
+							}).pipe(Effect.retry(navigationRetryPolicy));
+
+							if (state.precondition !== undefined) {
+								yield* Ref.set<StepProgress>(progress, {
+									index: -1,
+									kind: "precondition",
+									target: state.precondition,
+									phase: "precondition",
+								});
+								const present = yield* checkPrecondition(
+									page,
+									state.name,
+									state.precondition,
+									state.preconditionTimeoutMs,
+								);
+								if (!present) {
+									console.log(
+										`  - State "${state.name}" skipped: precondition "${state.precondition}" is not present on ${task.url}`,
+									);
+									return "skipped" as const;
+								}
+							}
+
+							yield* runStateScript(page, state.name, steps, progress);
+							return "ready" as const;
+						}).pipe(
+							Effect.timeout(budgetMs),
+							Effect.catchTag("TimeoutException", () =>
+								Effect.gen(function* () {
+									const at = yield* Ref.get(progress);
+									return yield* Effect.fail(
+										new StateCaptureError({
+											state: state.name,
+											// A step index is only meaningful while a step is what
+											// was running; naming the last completed step for a
+											// navigation or probe hang points the reader at code
+											// that already worked.
+											stepIndex:
+												at.phase === "step" || at.phase === "settle"
+													? at.index
+													: -1,
+											stepKind: at.kind,
+											target: at.target,
+											message: `state "${state.name}" timed out after ${budgetMs}ms ${timedOutDoing(at)}`,
+											cause: null,
+										}),
+									);
+								}),
+							),
+						);
+
+					const runInContext = Effect.acquireUseRelease(
+						// The context is acquired on its own. Effect registers a release
+						// only once its acquire has *completed*, so an acquire holding
+						// two resources strands the first when the second throws: a
+						// rejecting `newPage` used to leak the context for the whole run.
+						Effect.gen(function* () {
+							if (!browser) {
+								return yield* Effect.fail(
+									stateFailure("browser not initialized", null),
+								);
+							}
+							const browserRef = browser;
+							return yield* Effect.tryPromise({
+								try: () =>
+									browserRef.newContext({ colorScheme: cfg.colorScheme }),
+								catch: (error) =>
+									stateFailure("failed to create a browser context", error),
+							});
+						}),
+						(context) =>
+							Effect.acquireUseRelease(
+								Effect.tryPromise({
+									try: () => context.newPage(),
+									catch: (error) =>
+										stateFailure("failed to create a page", error),
+								}),
+								(page) =>
+									Effect.gen(function* () {
+										const outcome = yield* reachState(page);
+
+										if (outcome === "skipped") {
+											results.set(
+												task.resultKey,
+												new CaptureResult({
+													url: task.url,
+													route: getRouteName(task.url),
+													state: state.name,
+													stateStatus: "skipped",
+													screenshots: {},
+													timestamp: Date.now(),
+												}),
+											);
+											return;
+										}
+
+										const result = yield* capturePage(page, task.url, {
+											name: state.name,
+											viewports: stateViewports,
+											captureVideo: stateCaptureVideo,
+											prepare,
+										}).pipe(
+											Effect.mapError((error) =>
+												stateFailure(formatCaptureFailure(error), error),
+											),
+										);
+
+										results.set(task.resultKey, result);
+									}),
+								(page) => closeQuietly(() => page.close()),
+							),
+						(context) => closeQuietly(() => context.close()),
+					);
+
+					yield* runInContext.pipe(
+						Effect.catchAll((error) =>
+							Effect.gen(function* () {
+								const message = formatCaptureFailure(error);
+								console.error(`[Worker ${workerLabel}] ${message}`);
+								// An empty state directory is a visible artefact of a state
+								// that was attempted and did not reach its target — the
+								// opposite of a state that silently never existed.
+								yield* createDirectories(
+									getCaptureDir(cfg.outputDir, task.url, state.name),
+									false,
+								).pipe(Effect.catchAll(() => Effect.void));
+								results.set(
+									task.resultKey,
+									new CaptureResult({
+										url: task.url,
+										route: getRouteName(task.url),
+										state: state.name,
+										stateStatus: "failed",
+										failedStepIndex:
+											error instanceof StateCaptureError ? error.stepIndex : -1,
+										screenshots: {},
+										error: message,
+										timestamp: Date.now(),
+									}),
+								);
+							}),
+						),
+					);
+				});
+
 			const captureWebsite = (
 				url: string,
 			): Effect.Effect<
 				Map<string, CaptureResult>,
-				BrowserError | CaptureError | FileSystemError
+				BrowserError | CaptureError | FileSystemError | StateDefinitionError
 			> =>
 				Effect.gen(function* () {
 					console.log("Starting UI capture for:", url);
 					const urlObj = new URL(url);
 					hostFilters.hydrate(urlObj.hostname, cfg.allowedHosts);
+					seedUrl = urlObj;
+
+					// Authoring errors abort before Chromium ever launches: no amount of
+					// retrying makes a typo'd `extends` resolve.
+					const resolvedStates = yield* validateStates({
+						states: cfg.states,
+						seedUrl: url,
+						hostMatchesFilters: (hostname) =>
+							hostFilters.hostMatchesFilters(hostname, cfg.includeSubdomains),
+						allowStateRequests: cfg.allowStateRequests,
+						viewportNames: cfg.viewports.map((viewport) => viewport.name),
+						captureRoutes: cfg.captureRoutes,
+					});
+
+					const seedingStates = Array.from(resolvedStates.values()).some(
+						(entry) => entry.steps.some((step) => step.kind === "request"),
+					);
+					if (seedingStates && cfg.routeConcurrency > 1) {
+						console.warn(
+							"  ! Some states seed through request steps and workers run in parallel: a fresh browser context cannot un-seed a server. Use idempotent or per-state-keyed seeds, or --concurrency 1.",
+						);
+					}
 
 					const results = new Map<string, CaptureResult>();
 
@@ -323,7 +772,27 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 									);
 								}
 
-								const queueCapacity = Math.max(32, cfg.routeConcurrency * 8);
+								const stateTasks: StateTask[] = Array.from(
+									resolvedStates.values(),
+									(entry) => {
+										const stateUrl = new URL(entry.url ?? url, url).toString();
+										return {
+											type: "state" as const,
+											url: stateUrl,
+											stateName: entry.state.name,
+											resultKey: stateResultKey(stateUrl, entry.state.name),
+										};
+									},
+								);
+
+								// Every state is seeded before a worker starts taking, so the
+								// queue has to be able to hold them all or `Queue.offer`
+								// deadlocks against an empty pool.
+								const queueCapacity = Math.max(
+									32,
+									cfg.routeConcurrency * 8,
+									stateTasks.length + 1,
+								);
 								const taskQueue =
 									yield* Queue.bounded<QueueTask>(queueCapacity);
 								const pendingTasks = yield* Ref.make(0);
@@ -354,6 +823,13 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 											return;
 										}
 
+										// Crawl scope is the **hostname** filter, not the
+										// `isAllowedOrigin` gate that guards a scripted state's
+										// URL and a `request` step: scheduling a route only
+										// navigates and screenshots it, and inside one
+										// deployment an http→https or cross-port link is
+										// ordinary. `--allowed-hosts` / `--include-subdomains`
+										// are what bound a crawl, and they are hostname filters.
 										if (
 											!hostFilters.hostMatchesFilters(
 												hostname,
@@ -405,6 +881,20 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 											if (task.type === "shutdown") {
 												return yield* Effect.void;
 											}
+											if (task.type === "state") {
+												const resolved = resolvedStates.get(task.stateName);
+												yield* (
+													resolved
+														? processStateTask(
+																task,
+																resolved,
+																results,
+																`#${workerId}`,
+															)
+														: Effect.void
+												).pipe(Effect.ensuring(markTaskComplete()));
+												continue;
+											}
 											yield* processRouteTask(
 												page,
 												task,
@@ -417,6 +907,21 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 														`[Worker ${workerId}] Failed to capture ${task.url}:`,
 														error,
 													);
+													// A failed route is recorded, not merely logged:
+													// otherwise `failedCaptures` is structurally 0 and
+													// a half-crawled site reports as fully covered.
+													if (!results.has(task.normalizedUrl)) {
+														results.set(
+															task.normalizedUrl,
+															new CaptureResult({
+																url: task.url,
+																route: getRouteName(task.url),
+																screenshots: {},
+																error: formatCaptureFailure(error),
+																timestamp: Date.now(),
+															}),
+														);
+													}
 													return Effect.void;
 												}),
 												Effect.ensuring(markTaskComplete()),
@@ -424,6 +929,13 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 										}
 									});
 
+								// Nested rather than one acquire holding both, for the
+								// reason `processStateTask` spells out: Effect registers a
+								// release only once its acquire has *completed*, so an
+								// acquire that takes the context and then the page strands
+								// the context when `newPage` rejects — a leaked context for
+								// the rest of the run, on the one path where something is
+								// already going wrong.
 								const createWorker = (
 									workerId: number,
 								): Effect.Effect<void, CaptureError | FileSystemError> =>
@@ -439,7 +951,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 												);
 											}
 											const browserRef = browser;
-											const context = yield* Effect.tryPromise({
+											return yield* Effect.tryPromise({
 												try: () =>
 													browserRef.newContext({
 														colorScheme: cfg.colorScheme,
@@ -451,27 +963,44 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 														cause: error,
 													}),
 											});
-											const page = yield* Effect.tryPromise({
-												try: () => context.newPage(),
-												catch: (error) =>
-													new CaptureError({
-														url,
-														message: `Worker ${workerId}: Failed to create page`,
-														cause: error,
-													}),
-											});
-											console.log(`✓ Worker ${workerId} ready`);
-											return { context, page };
 										}),
-										({ page }) => workerLoop(page, workerId),
-										({ context }) =>
-											Effect.tryPromise({
-												try: () => context.close(),
-												catch: () => undefined,
-											}).pipe(Effect.catchAll(() => Effect.void)),
+										(context) =>
+											Effect.acquireUseRelease(
+												Effect.tryPromise({
+													try: () => context.newPage(),
+													catch: (error) =>
+														new CaptureError({
+															url,
+															message: `Worker ${workerId}: Failed to create page`,
+															cause: error,
+														}),
+												}),
+												(page) =>
+													Effect.gen(function* () {
+														console.log(`✓ Worker ${workerId} ready`);
+														return yield* workerLoop(page, workerId);
+													}),
+												(page) => closeQuietly(() => page.close()),
+											),
+										(context) => closeQuietly(() => context.close()),
 									);
 
-								yield* scheduleRoute(url, 0);
+								// States are seeded alongside the seed route, before any
+								// worker starts, so their ordering never depends on discovery
+								// order and a crawl that dies early cannot silently drop them.
+								if (cfg.captureRoutes) {
+									yield* scheduleRoute(url, 0);
+								}
+								yield* Effect.forEach(
+									stateTasks,
+									(stateTask) =>
+										Effect.gen(function* () {
+											yield* Ref.update(pendingTasks, (count) => count + 1);
+											yield* Queue.offer(taskQueue, stateTask);
+										}),
+									{ discard: true },
+								);
+
 								const initialPending = yield* Ref.get(pendingTasks);
 								if (initialPending === 0) {
 									yield* signalShutdown();

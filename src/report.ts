@@ -25,22 +25,53 @@ import {
 	type ViewportConfig,
 } from "./schemas.js";
 
+/** A capture unit's heading: the route, or `route \u2014 state` for a state. */
+const captureLabel = (result: CaptureResult): string =>
+	result.state ? `${result.route} \u2014 ${result.state}` : result.route;
+
 const generateMarkdown = (
 	outputDir: string,
-	results: Map<string, CaptureResult>,
+	counts: {
+		readonly totalRoutes: number;
+		readonly totalStates: number;
+	},
 	successful: CaptureResult[],
 	failed: CaptureResult[],
+	states: CaptureResult[],
 ): string => {
 	let md = "# UI Capture Report\n\n";
 	md += `Generated: ${new Date().toISOString()}\n\n`;
 	md += "## Summary\n\n";
-	md += `- Total Routes: ${results.size}\n`;
+	md += `- Total Routes: ${counts.totalRoutes}\n`;
+	if (counts.totalStates > 0) {
+		md += `- Scripted States: ${counts.totalStates}\n`;
+	}
 	md += `- Successful: ${successful.length}\n`;
 	md += `- Failed: ${failed.length}\n\n`;
 
+	if (states.length > 0) {
+		md += "## Scripted States\n\n";
+		md += "| State | Route | URL | Result | Step |\n";
+		md += "| ----- | ----- | --- | ------ | ---- |\n";
+		for (const result of states) {
+			const status =
+				result.stateStatus === "captured"
+					? "\u2713 captured"
+					: result.stateStatus === "skipped"
+						? "\u2013 skipped"
+						: "\u2717 failed";
+			const step =
+				result.failedStepIndex === undefined || result.failedStepIndex < 0
+					? ""
+					: `step ${result.failedStepIndex}`;
+			md += `| ${result.state} | ${result.route} | ${result.url} | ${status} | ${step} |\n`;
+		}
+		md += "\n";
+	}
+
 	md += "## Captured Routes\n\n";
 	for (const result of successful) {
-		md += `### ${result.route}\n\n`;
+		md += `### ${captureLabel(result)}\n\n`;
 		md += `**URL:** ${result.url}\n\n`;
 
 		for (const [viewport, formats] of Object.entries(result.screenshots)) {
@@ -70,13 +101,19 @@ const generateMarkdown = (
 			}
 		}
 
+		if (result.videoErrors && result.videoErrors.length > 0) {
+			// A capture that lost its video still lists the screenshots above;
+			// this is the part that did not happen, named rather than dropped.
+			md += `**Video capture failed:** ${result.videoErrors.join("; ")}\n\n`;
+		}
+
 		md += "---\n\n";
 	}
 
 	if (failed.length > 0) {
 		md += "## Failed Captures\n\n";
 		for (const result of failed) {
-			md += `- ${result.url}: ${result.error}\n`;
+			md += `- ${captureLabel(result)} (${result.url}): ${result.error}\n`;
 		}
 	}
 
@@ -90,20 +127,35 @@ export const generateReports = (
 ): Effect.Effect<void, FileSystemError> =>
 	Effect.gen(function* () {
 		const resultsArray = Array.from(results.values());
-		const successful = resultsArray.filter((r) => !r.error);
 		const failed = resultsArray.filter((r) => !!r.error);
+		const skipped = resultsArray.filter(
+			(r) => !r.error && r.stateStatus === "skipped",
+		);
+		const successful = resultsArray.filter(
+			(r) => !r.error && r.stateStatus !== "skipped",
+		);
+		const states = resultsArray.filter((r) => r.state !== undefined);
+		// `totalRoutes` counts crawled routes only, so a run with no states
+		// reports exactly the number it always did.
+		const totalRoutes = resultsArray.length - states.length;
 
 		const report = new CaptureReport({
 			timestamp: new Date().toISOString(),
-			totalRoutes: results.size,
+			totalRoutes,
+			totalStates: states.length,
 			successfulCaptures: successful.length,
 			failedCaptures: failed.length,
+			skippedStates: skipped.length,
 			viewports,
 			results: resultsArray.map((result) => ({
 				url: result.url,
 				route: result.route,
+				state: result.state,
+				stateStatus: result.stateStatus,
+				failedStepIndex: result.failedStepIndex,
 				screenshots: Object.keys(result.screenshots),
 				hasVideo: !!result.videos,
+				videoErrors: result.videoErrors,
 				error: result.error,
 			})),
 		});
@@ -119,7 +171,13 @@ export const generateReports = (
 				}),
 		});
 
-		const markdown = generateMarkdown(outputDir, results, successful, failed);
+		const markdown = generateMarkdown(
+			outputDir,
+			{ totalRoutes, totalStates: states.length },
+			successful,
+			failed,
+			states,
+		);
 		const mdPath = path.join(outputDir, "REPORT.md");
 		yield* Effect.tryPromise({
 			try: () => fs.writeFile(mdPath, markdown),

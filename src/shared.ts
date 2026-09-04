@@ -16,6 +16,7 @@
  *
  */
 import { execFile, spawn } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 import { Effect, Schedule } from "effect";
 import { FileSystemError } from "./errors.js";
@@ -27,13 +28,52 @@ export type RouteTask = {
 	readonly normalizedUrl: string;
 };
 
+/**
+ * One scripted state, queued as a first-class peer of a route rather than a
+ * phase bolted onto the end of a crawl: same queue, same worker pool, same
+ * `--concurrency`, same results map, same report.
+ */
+export type StateTask = {
+	readonly type: "state";
+	readonly url: string;
+	readonly stateName: string;
+	/**
+	 * Where the state's result lands. A state is a capture leaf — it never
+	 * feeds the crawl frontier and is never deduplicated by URL — so the
+	 * normalized URL a `RouteTask` needs has no reader here, and carrying one
+	 * would only invite a caller to key a state by it and collide with the
+	 * route capture for the same page.
+	 */
+	readonly resultKey: string;
+};
+
 export type ShutdownTask = {
 	readonly type: "shutdown";
 };
 
-export type QueueTask = RouteTask | ShutdownTask;
+export type QueueTask = RouteTask | StateTask | ShutdownTask;
 
 export const ShutdownSignal: ShutdownTask = { type: "shutdown" } as const;
+
+/**
+ * Best-effort teardown, for the release half of an `acquireUseRelease`.
+ *
+ * Closing a context or a page is what reaps its browser-side resources — and
+ * for a recording context, what flushes the video to disk — so it has to run
+ * on every exit path, including an interrupted one. It must never fail: a
+ * `close()` that rejects on an already-dead target would otherwise replace the
+ * real error with a teardown error and lose the reason the run stopped.
+ *
+ * Lives here because both the service (state and worker contexts, worker
+ * pages) and the video recorder need exactly this, and two copies are two
+ * chances for one of them to start reporting its failures.
+ */
+export const closeQuietly = (
+	close: () => Promise<unknown>,
+): Effect.Effect<void> =>
+	Effect.tryPromise({ try: close, catch: () => undefined }).pipe(
+		Effect.catchAll(() => Effect.void),
+	);
 
 export const LINK_FILTER_CONCURRENCY = 32;
 export const navigationRetryPolicy = Schedule.recurs(3);
@@ -186,6 +226,47 @@ export const createHostFilterState = (): HostFilterState => {
 	};
 };
 
+/**
+ * The origin gate for the two decisions that let a run *act* on a URL: a
+ * scripted state's entry `url`, and the URL a `request` step resolves to.
+ *
+ * An origin is **scheme + host + port**, so that is what gets compared:
+ * `hostMatchesFilters` decides the host (it canonicalizes `www.` and honors
+ * `--allowed-hosts` / `--include-subdomains`), and the seed decides the scheme
+ * and the port. Matching on hostname alone let `http://app.test:4000` through
+ * a filter whose whole purpose was to confine a run to `https://app.test` —
+ * a different port and a downgraded scheme are different servers, and for a
+ * `request` step that means a POST at a machine the user never named.
+ *
+ * `URL.port` is already normalized (`""` for a scheme's default), so
+ * `https://a.test` and `https://a.test:443` compare equal without special
+ * casing.
+ *
+ * Both the pre-launch validation in `states.ts` and the runtime request gate
+ * in the state driver call this, so a states file that validates cannot be
+ * widened at runtime and a run cannot abort on something the runtime would
+ * have allowed.
+ *
+ * **Route crawling deliberately does not use this gate.** `scheduleRoute` in
+ * `service.ts` and the link filter in `link-discovery.ts` match on the
+ * hostname alone, so a crawl seeded at `http://app.test:3000` will follow and
+ * capture a link to `https://app.test` or `http://app.test:8080`. The two
+ * answer different questions: crawling navigates and screenshots, and within
+ * one deployment an http→https or cross-port link is ordinary rather than
+ * suspicious, while this gate authorizes driving a scripted state at a URL and
+ * sending a `request` step's POST or DELETE at it. `--allowed-hosts` and
+ * `--include-subdomains` are documented as hostname filters, and hostname is
+ * what bounds a crawl.
+ */
+export const isAllowedOrigin = (
+	candidate: URL,
+	seed: URL,
+	hostMatchesFilters: (hostname: string) => boolean,
+): boolean =>
+	candidate.protocol === seed.protocol &&
+	candidate.port === seed.port &&
+	hostMatchesFilters(candidate.hostname);
+
 export const normalizeUrl = (url: string): string => {
 	try {
 		const u = new URL(url);
@@ -209,4 +290,29 @@ export const getRouteName = (url: string): string => {
 	} catch {
 		return "invalid-url";
 	}
+};
+
+/**
+ * Keys a scripted-state result so it can never overwrite the route result for
+ * the same URL, nor another state's result on that URL.
+ */
+export const stateResultKey = (url: string, stateName: string): string =>
+	`${normalizeUrl(url)}::state=${stateName}`;
+
+/**
+ * Where one capture unit's `screenshots/` and `videos/` live.
+ *
+ * A scripted state nests under the route it belongs to
+ * (`<route>/states/<name>/`) rather than encoding both axes in one slug: the
+ * route/state relationship stays visible in the tree, and a future capture
+ * axis does not have to fight a separator convention. Everything downstream
+ * treats this as an opaque prefix.
+ */
+export const getCaptureDir = (
+	outputDir: string,
+	url: string,
+	stateName?: string,
+): string => {
+	const routeDir = path.join(outputDir, getRouteName(url));
+	return stateName ? path.join(routeDir, "states", stateName) : routeDir;
 };

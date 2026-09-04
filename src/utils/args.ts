@@ -94,26 +94,3 @@ export function parseArgs(
 
 	return { positional, options };
 }
-
-/**
- * Standardized separator for CLI output
- */
-export const SEPARATOR = "=".repeat(80);
-
-/**
- * Display a stylized header
- */
-export function displayHeader(
-	title: string,
-	details: Record<string, string>,
-): void {
-	console.log();
-	console.log(SEPARATOR);
-	console.log(`  🚀 ${title}`);
-	console.log(SEPARATOR);
-	for (const [key, value] of Object.entries(details)) {
-		console.log(`  • ${key}: ${value}`);
-	}
-	console.log(SEPARATOR);
-	console.log();
-}

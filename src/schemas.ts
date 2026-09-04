@@ -39,11 +39,250 @@ export class VideoQualityPaths extends S.Class<VideoQualityPaths>(
 	low: S.String,
 }) {}
 
+/**
+ * Modifiers every scripted step carries.
+ *
+ * `settleMs` attaches the pause to the action that caused it, which is what
+ * keeps a script readable: `{"kind":"click","settleMs":400}` says *why* the
+ * pause exists, where a bare {@link WaitStep} two lines down does not.
+ */
+const StepBaseFields = {
+	/** Log and skip this step on failure instead of failing the whole state. */
+	optional: S.optionalWith(S.Boolean, { default: () => false }),
+	/** Per-step timeout override (default: 5000). */
+	timeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
+	/** Pause after the step succeeds, for animation/transition settling. */
+	settleMs: S.optional(S.Number.pipe(S.int(), S.nonNegative())),
+};
+
+/**
+ * Wait for a selector to reach a DOM state. This is also the assertion
+ * mechanism: if the dialog never opens, the state fails rather than
+ * screenshotting the boot view and reporting success.
+ */
+export class WaitForStep extends S.Class<WaitForStep>("WaitForStep")({
+	kind: S.Literal("waitFor"),
+	selector: S.String,
+	state: S.optionalWith(
+		S.Literal("visible", "hidden", "attached", "detached"),
+		{ default: () => "visible" as const },
+	),
+	/**
+	 * Require at least this many matches. Waiting for *one* `.fleet-row` and
+	 * shooting a half-populated fleet is exactly the "looks like coverage"
+	 * failure scripted states exist to eliminate.
+	 */
+	minCount: S.optional(S.Number.pipe(S.int(), S.positive())),
+	...StepBaseFields,
+}) {}
+
+/**
+ * A blind pause. The only honest tool for a WebGL scene whose intro tween has
+ * no DOM correlate; prefer `settleMs` on the action that caused the wait, or
+ * {@link WaitForStep} on a readiness attribute, whenever one exists.
+ */
+export class WaitStep extends S.Class<WaitStep>("WaitStep")({
+	kind: S.Literal("wait"),
+	ms: S.Number.pipe(S.int(), S.nonNegative()),
+	...StepBaseFields,
+}) {}
+
+export class ClickStep extends S.Class<ClickStep>("ClickStep")({
+	kind: S.Literal("click"),
+	selector: S.String,
+	/** Zero-based index when the selector matches several elements. */
+	nth: S.optional(S.Number.pipe(S.int(), S.nonNegative())),
+	...StepBaseFields,
+}) {}
+
+export class FillStep extends S.Class<FillStep>("FillStep")({
+	kind: S.Literal("fill"),
+	selector: S.String,
+	value: S.String,
+	...StepBaseFields,
+}) {}
+
+/**
+ * Drive a native `<select>`. Not redundant with {@link ClickStep}: Chromium
+ * renders the option list in an OS-level popup that DOM clicks cannot reach.
+ */
+export class SelectStep extends S.Class<SelectStep>("SelectStep")({
+	kind: S.Literal("select"),
+	selector: S.String,
+	values: S.Array(S.String),
+	...StepBaseFields,
+}) {}
+
+export class PressStep extends S.Class<PressStep>("PressStep")({
+	kind: S.Literal("press"),
+	key: S.String,
+	/** Target a specific element; omitted, the key goes to `page.keyboard`. */
+	selector: S.optional(S.String),
+	...StepBaseFields,
+}) {}
+
+/**
+ * Seed application state through the app's own API, using the page's browser
+ * context so the request inherits its session cookie and origin.
+ *
+ * `path` is resolved against the page URL, making it same-origin by
+ * construction; the crawler's host filter is applied as a second gate. Runs
+ * only when `allowStateRequests` is enabled (`--allow-state-requests`).
+ */
+export class RequestStep extends S.Class<RequestStep>("RequestStep")({
+	kind: S.Literal("request"),
+	method: S.Literal("GET", "POST", "PUT", "PATCH", "DELETE"),
+	/** Resolved against the page URL. Absolute URLs must stay same-host. */
+	path: S.String,
+	json: S.optional(S.Unknown),
+	headers: S.optional(S.Record({ key: S.String, value: S.String })),
+	/** Defaults to "any 2xx". A seed that silently 500s fails the state. */
+	expectStatus: S.optional(S.Number.pipe(S.int(), S.positive())),
+	...StepBaseFields,
+}) {}
+
+/**
+ * Re-enter the app against new server state. Without it {@link RequestStep} is
+ * half-useless: an app that reads its fleet once at boot never shows seeded
+ * data on the already-loaded page.
+ */
+export class ReloadStep extends S.Class<ReloadStep>("ReloadStep")({
+	kind: S.Literal("reload"),
+	waitUntil: S.optionalWith(
+		S.Literal("load", "domcontentloaded", "networkidle", "commit"),
+		{ default: () => "networkidle" as const },
+	),
+	...StepBaseFields,
+}) {}
+
+/**
+ * The complete scripted-step vocabulary.
+ *
+ * The governing rule for admitting a kind: a step must produce **committed
+ * page state**, must be readable as data by a reviewer, and must not be
+ * expressible by composing the others. That rule is why there is no `hover`
+ * (cursor-transient, and the viewport loop resizes underneath it), no
+ * `evaluate` (unreviewable), and no variables — no response value is ever
+ * bound to a name, so there is no templating, interpolation, or expression
+ * language anywhere in the format.
+ */
+export const CaptureStep = S.Union(
+	WaitForStep,
+	WaitStep,
+	ClickStep,
+	FillStep,
+	SelectStep,
+	PressStep,
+	RequestStep,
+	ReloadStep,
+);
+export type CaptureStep = typeof CaptureStep.Type;
+
+/**
+ * A named interaction script performed on a page before capture, so the state
+ * it produces gets its own capture set.
+ *
+ * `name` is pattern-constrained because it becomes a directory component:
+ * rejecting loudly beats silently slugifying two states into one directory,
+ * and lowercase-only avoids `Spawn`/`spawn` colliding on a case-insensitive
+ * filesystem.
+ */
+export class CaptureState extends S.Class<CaptureState>("CaptureState")({
+	name: S.String.pipe(S.pattern(/^[a-z0-9][a-z0-9-]*$/)),
+	description: S.optional(S.String),
+	/** Absolute, or relative to the seed URL. Defaults to the seed URL. */
+	url: S.optional(S.String),
+	/**
+	 * Prepend another state's steps to this one's. The child still starts from a
+	 * fresh page load in a fresh context and *replays* the parent — states never
+	 * inherit live page state from each other.
+	 */
+	extends: S.optional(S.String),
+	/**
+	 * A selector probed on the fresh load, before any step. When it is absent,
+	 * the state is recorded as `skipped` rather than `failed`: "this state does
+	 * not exist here" is a different event from "this state's script is broken".
+	 *
+	 * A selector that cannot be *evaluated* — a typo, a malformed CSS — is
+	 * neither: the state fails, because a probe that silently answers "not here"
+	 * to a broken selector produces a green run with nothing captured.
+	 */
+	precondition: S.optional(S.String),
+	/**
+	 * Budget for this state's `precondition` probe, overriding
+	 * `preconditionTimeout` for the run.
+	 *
+	 * Per state because readiness is not uniform: a state gated on a nav link
+	 * present at first paint should not wait as long as one gated on a WebGL
+	 * console's first frame, and a probe that gives up early reports the state
+	 * as *absent here* rather than slow.
+	 */
+	preconditionTimeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
+	/**
+	 * Restrict this state to named viewports. The script runs once and the
+	 * viewport loop resizes afterwards, so a dialog that unmounts below a
+	 * breakpoint would otherwise be screenshotted as the boot view.
+	 *
+	 * An empty array is rejected rather than treated as "none": it would
+	 * capture zero screenshots and still be reported as captured, and a state
+	 * that captured nothing must never report success. Omit the field to use
+	 * every configured viewport.
+	 */
+	viewports: S.optional(S.Array(S.String).pipe(S.minItems(1))),
+	steps: S.Array(CaptureStep),
+	/**
+	 * Budget for *reaching* this state — navigation, the `precondition` probe
+	 * and the script — overriding `stateTimeout` for the run.
+	 *
+	 * It stops there, exactly as the run-wide default does: screenshot and
+	 * video capture run outside it, under their own timeouts. A budget that
+	 * covered capture too could not be satisfied by any value once `--video`
+	 * was on.
+	 */
+	timeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
+	/**
+	 * Record video for this state even though its script contains a `request`
+	 * step. Video replays the script in a second context, so a non-idempotent
+	 * seed would run twice and the video would disagree with the stills; such
+	 * states skip video unless this says otherwise.
+	 */
+	allowVideoReplay: S.optionalWith(S.Boolean, { default: () => false }),
+}) {}
+
+/**
+ * The on-disk states file. `version` is required rather than defaulted: the
+ * step vocabulary becomes a public JSON format on files on other people's
+ * disks the day it ships, and a discriminant is what lets a v2 rename a kind
+ * without guessing at an unversioned file's intent.
+ */
+export class StatesFile extends S.Class<StatesFile>("StatesFile")({
+	version: S.Literal(1),
+	states: S.Array(CaptureState),
+}) {}
+
+/** Outcome of one scripted state. */
+export const StateStatus = S.Literal("captured", "skipped", "failed");
+export type StateStatus = typeof StateStatus.Type;
+
 export class CaptureResult extends S.Class<CaptureResult>("CaptureResult")({
 	url: S.String,
 	route: S.String,
+	/** Set only for scripted-state captures; absent for crawled routes. */
+	state: S.optional(S.String),
+	stateStatus: S.optional(StateStatus),
+	/** Index of the step that failed; `-1` for a whole-state failure. */
+	failedStepIndex: S.optional(S.Number.pipe(S.int())),
 	screenshots: S.Record({ key: S.String, value: ScreenshotPaths }),
 	videos: S.optional(S.Record({ key: S.String, value: VideoQualityPaths })),
+	/**
+	 * Per-viewport video failures on a capture whose screenshots landed.
+	 *
+	 * A failed recording does not un-write the stills that are already on
+	 * disk, so it is reported here rather than through `error`: the capture
+	 * stays a success and says what it lost, instead of discarding good work
+	 * and counting as a failure that produced nothing.
+	 */
+	videoErrors: S.optional(S.Array(S.String)),
 	error: S.optional(S.String),
 	timestamp: S.Number.pipe(S.int()),
 }) {}
@@ -61,6 +300,22 @@ export class VideoOptions extends S.Class<VideoOptions>("VideoOptions")(
 		interactions: true,
 	});
 }
+
+/**
+ * Default budget for a state's `precondition` probe.
+ *
+ * Generous on purpose. The probe runs after `goto` has settled, but "settled"
+ * is a network fact rather than a rendering one: an app that boots a WebGL
+ * scene, or hydrates and then fetches, reaches its first meaningful frame
+ * seconds later. A probe that gives up first reports the state as *not present
+ * here* — the one outcome that yields a green run with nothing captured. Ten
+ * seconds still sits well inside the whole-state budget, so a state that
+ * genuinely does not exist here skips cheaply instead of consuming it.
+ *
+ * Lives here rather than in the driver so the config default and the driver's
+ * own fallback cannot drift apart.
+ */
+export const DEFAULT_PRECONDITION_TIMEOUT_MS = 10000;
 
 const CaptureConfigFields = {
 	outputDir: S.String,
@@ -86,6 +341,41 @@ const CaptureConfigFields = {
 	 * capturing such a site's dark face requires saying so explicitly.
 	 */
 	colorScheme: S.Literal("light", "dark", "no-preference"),
+	/**
+	 * Named interaction scripts run before capture. Empty by default, so a run
+	 * without a states file behaves exactly as it always has.
+	 */
+	states: S.Array(CaptureState),
+	/**
+	 * Default budget in ms for *reaching* a state: navigation, the
+	 * `precondition` probe and the script. A state may override it.
+	 *
+	 * It deliberately stops there. Screenshot and video capture are bounded by
+	 * their own timeouts and by `videoOptions.duration` × viewport count, and
+	 * folding them in made the default unsatisfiable: a state captured with
+	 * `--video` could not fit a 30 s budget on any configuration, so every
+	 * state timed out. The default exceeds the 30 s navigation timeout so a
+	 * slow first load still leaves the script a budget to run in.
+	 */
+	stateTimeout: S.Number.pipe(S.int(), S.positive()),
+	/**
+	 * Budget for a state's `precondition` probe; a state may override it with
+	 * its own `preconditionTimeoutMs`.
+	 *
+	 * Separate from `stateTimeout`, and much smaller, because the two answer
+	 * different questions. The probe decides whether the state *exists here* at
+	 * all, and its cost is paid in full by every state that legitimately does
+	 * not — so it has to be long enough for a slow-booting app to reach first
+	 * paint, and short enough that a skip is not the run's dominant cost.
+	 */
+	preconditionTimeout: S.Number.pipe(S.int(), S.positive()),
+	/** Crawl and capture routes. `false` captures only scripted states. */
+	captureRoutes: S.Boolean,
+	/**
+	 * Permit `request` steps. Off by default: a states file handed to you by a
+	 * colleague should not be able to POST to your app because you ran the tool.
+	 */
+	allowStateRequests: S.Boolean,
 };
 
 export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
@@ -111,21 +401,35 @@ export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
 		warmupScroll: true,
 		launchArgs: [],
 		colorScheme: "light",
+		states: [],
+		stateTimeout: 60000,
+		preconditionTimeout: DEFAULT_PRECONDITION_TIMEOUT_MS,
+		captureRoutes: true,
+		allowStateRequests: false,
 	});
 }
 
 export class CaptureReport extends S.Class<CaptureReport>("CaptureReport")({
 	timestamp: S.String,
+	/** Crawled routes only; scripted states are counted separately. */
 	totalRoutes: S.Number.pipe(S.int(), S.nonNegative()),
+	totalStates: S.Number.pipe(S.int(), S.nonNegative()),
 	successfulCaptures: S.Number.pipe(S.int(), S.nonNegative()),
 	failedCaptures: S.Number.pipe(S.int(), S.nonNegative()),
+	/** States whose `precondition` was absent on the loaded page. */
+	skippedStates: S.Number.pipe(S.int(), S.nonNegative()),
 	viewports: S.Array(ViewportConfig),
 	results: S.Array(
 		S.Struct({
 			url: S.String,
 			route: S.String,
+			state: S.optional(S.String),
+			stateStatus: S.optional(StateStatus),
+			failedStepIndex: S.optional(S.Number.pipe(S.int())),
 			screenshots: S.Array(S.String),
 			hasVideo: S.Boolean,
+			/** Viewports whose video failed while their screenshots succeeded. */
+			videoErrors: S.optional(S.Array(S.String)),
 			error: S.optional(S.String),
 		}),
 	),
@@ -146,6 +450,13 @@ type VideoOptionsInput =
 			readonly interactions?: boolean;
 	  };
 
+/**
+ * A {@link CaptureState}, or the plain object shape a states file decodes
+ * from. Plain objects are validated through the schema, so a programmatic
+ * caller gets the same errors a bad file does.
+ */
+export type CaptureStateInput = CaptureState | Record<string, unknown>;
+
 export type CaptureConfigOverrides = Partial<{
 	outputDir: string;
 	captureVideo: boolean;
@@ -162,6 +473,11 @@ export type CaptureConfigOverrides = Partial<{
 	warmupScroll: boolean;
 	launchArgs: ReadonlyArray<string>;
 	colorScheme: "light" | "dark" | "no-preference";
+	states: ReadonlyArray<CaptureStateInput>;
+	stateTimeout: number;
+	preconditionTimeout: number;
+	captureRoutes: boolean;
+	allowStateRequests: boolean;
 }>;
 
 const toViewportInstance = (viewport: ViewportConfigInput): ViewportConfig =>
@@ -179,6 +495,11 @@ const toVideoOptionsInstance = (
 				...(input ?? {}),
 			});
 
+const decodeCaptureState = S.decodeUnknownSync(CaptureState);
+
+const toCaptureStateInstance = (input: CaptureStateInput): CaptureState =>
+	input instanceof CaptureState ? input : decodeCaptureState(input);
+
 export const createCaptureConfig = (
 	overrides: CaptureConfigOverrides = {},
 ): CaptureConfig => {
@@ -193,11 +514,16 @@ export const createCaptureConfig = (
 			? toVideoOptionsInstance(overrides.videoOptions, base.videoOptions)
 			: base.videoOptions;
 
+	const states = overrides.states
+		? overrides.states.map(toCaptureStateInstance)
+		: base.states;
+
 	return new CaptureConfig({
 		...base,
 		...overrides,
 		viewports,
 		videoOptions,
+		states,
 		allowedHosts: overrides.allowedHosts
 			? Array.from(overrides.allowedHosts)
 			: base.allowedHosts,
@@ -213,5 +539,10 @@ export const createCaptureConfig = (
 			? Array.from(overrides.launchArgs)
 			: base.launchArgs,
 		colorScheme: overrides.colorScheme ?? base.colorScheme,
+		stateTimeout: overrides.stateTimeout ?? base.stateTimeout,
+		preconditionTimeout:
+			overrides.preconditionTimeout ?? base.preconditionTimeout,
+		captureRoutes: overrides.captureRoutes ?? base.captureRoutes,
+		allowStateRequests: overrides.allowStateRequests ?? base.allowStateRequests,
 	});
 };

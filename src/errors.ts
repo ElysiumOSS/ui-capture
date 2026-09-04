@@ -42,3 +42,45 @@ export class FileSystemError extends S.TaggedError<FileSystemError>()(
 		cause: S.Unknown,
 	},
 ) {}
+
+/**
+ * A scripted state that could never have worked: a duplicate or unknown name,
+ * an `extends` cycle, an off-host `request` path, a viewport filter naming a
+ * viewport that is not configured.
+ *
+ * Definition errors are raised before Chromium launches and abort the run,
+ * because no amount of retrying makes a typo'd `extends` resolve. Runtime
+ * problems are {@link StateCaptureError} instead, and are recorded per state
+ * so one broken script cannot abort a capture run.
+ */
+export class StateDefinitionError extends S.TaggedError<StateDefinitionError>()(
+	"StateDefinitionError",
+	{
+		state: S.String,
+		message: S.String,
+		cause: S.Unknown,
+	},
+) {}
+
+/**
+ * A scripted state that failed while running: a selector that never appeared,
+ * an action that threw, a seeding request that returned the wrong status, or
+ * the whole state exceeding its budget.
+ *
+ * `stepIndex: -1` denotes a failure that no step is answerable for, with
+ * `stepKind` naming which one: `"state"` for navigation or the whole-state
+ * budget, `"precondition"` for a probe that could not be evaluated at all —
+ * a malformed selector, a page that went away. A precondition that is simply
+ * *absent* is not a failure and produces no error; the state is `skipped`.
+ */
+export class StateCaptureError extends S.TaggedError<StateCaptureError>()(
+	"StateCaptureError",
+	{
+		state: S.String,
+		stepIndex: S.Number,
+		stepKind: S.String,
+		target: S.String,
+		message: S.String,
+		cause: S.Unknown,
+	},
+) {}
