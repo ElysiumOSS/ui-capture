@@ -94,6 +94,16 @@ const NO_VIDEO_CAPTURED: ViewportVideoOutcome = {
 	error: Option.none(),
 };
 
+/**
+ * Why a state that reached the end of its viewport loop with nothing to show
+ * for it is a failure rather than a capture.
+ *
+ * Exported so the test that bypasses the schema's `minItems(1)` guard asserts
+ * on the same string the service reports, rather than on a copy of it.
+ */
+export const EMPTY_STATE_CAPTURE_MESSAGE =
+	"no screenshots were captured: the state resolved to zero viewports, and a state that captured nothing must not be reported as captured";
+
 /** A one-line, report-ready rendering of any failure this service can raise. */
 const formatCaptureFailure = (error: unknown): string => {
 	if (error instanceof FileSystemError) {
@@ -361,6 +371,26 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 					const videoErrors = screenshotResults.flatMap(([, data]) =>
 						Option.isSome(data.video.error) ? [data.video.error.value] : [],
 					);
+
+					// Defense in depth for the schema's `minItems(1)` on a state's
+					// `viewports`. The status is decided here, so it is here that
+					// "the viewport loop ended" must not be mistaken for "something
+					// was captured": an empty loop leaves `screenshots` empty and
+					// used to be reported `captured` with nothing in it — a green
+					// state, on disk as an empty directory. Whatever lets a state
+					// reach this point with no viewports — a relaxed schema, a
+					// filter that intersects to nothing, a future capture axis —
+					// this fails it instead. `CaptureError` is the channel the
+					// caller already maps to `stateStatus: "failed"`.
+					if (stateContext && Object.keys(screenshots).length === 0) {
+						return yield* Effect.fail(
+							new CaptureError({
+								url,
+								message: EMPTY_STATE_CAPTURE_MESSAGE,
+								cause: null,
+							}),
+						);
+					}
 
 					return new CaptureResult({
 						url,

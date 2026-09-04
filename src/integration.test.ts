@@ -18,7 +18,12 @@ import path from "node:path";
 import { Effect } from "effect";
 import { chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CaptureConfigLive, UICaptureService } from "./service.js";
+import { CaptureState } from "./schemas.js";
+import {
+	CaptureConfigLive,
+	EMPTY_STATE_CAPTURE_MESSAGE,
+	UICaptureService,
+} from "./service.js";
 import { filterStates, parseStatesFile } from "./states.js";
 
 // Real browser+ffmpeg integration. Off by default; flip RUN_INTEGRATION=1 to opt in.
@@ -822,6 +827,49 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		const files = (await fs.readdir(pngDir)).sort();
 		expect(files).toEqual(["desktop_1280x720_latest.png", "history"]);
 	}, 120_000);
+
+	it("fails a state that captured nothing, with the schema guard bypassed", async () => {
+		const dir = await outDir("empty-viewports");
+		const [valid] = await writeStatesFile(dir, [
+			{
+				name: "empty-vp",
+				viewports: ["desktop"],
+				steps: [{ kind: "waitFor", selector: "[data-app-ready]" }],
+			},
+		]);
+		if (!valid) throw new Error("fixture state did not parse");
+
+		// The schema's `minItems(1)` still rejects an empty viewport list, and
+		// stays the first line of defense.
+		expect(() => new CaptureState({ ...valid, viewports: [] })).toThrow();
+
+		// `disableValidation` is the only way to build the state the schema
+		// refuses, and that is the point: it stands in for whatever else could
+		// one day put a state in front of the viewport loop with nothing to
+		// iterate — a relaxed schema, a filter that intersects to nothing, a new
+		// capture axis. Before the service-level guard this run reported
+		// `stateStatus: "captured"` with an empty `screenshots` map and counted
+		// as a successful capture.
+		const state = new CaptureState(
+			{ ...valid, viewports: [] },
+			{ disableValidation: true },
+		);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			states: [state],
+		});
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.state).toBe("empty-vp");
+		expect(result.stateStatus).toBe("failed");
+		expect(result.error).toContain(EMPTY_STATE_CAPTURE_MESSAGE);
+		expect(result.screenshots).toEqual([]);
+		expect(report.successfulCaptures).toBe(0);
+		expect(report.failedCaptures).toBe(1);
+	}, 60_000);
 
 	/** The two states a `--state-filter` run has to tell apart. */
 	const seedChain = [
