@@ -16,9 +16,10 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
+import { chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaptureConfigLive, UICaptureService } from "./service.js";
-import { parseStatesFile } from "./states.js";
+import { filterStates, parseStatesFile } from "./states.js";
 
 // Real browser+ffmpeg integration. Off by default; flip RUN_INTEGRATION=1 to opt in.
 const RUN = process.env.RUN_INTEGRATION === "1";
@@ -117,6 +118,21 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 	let baseUrl: string;
 	let tmpRoot: string;
 	let seedCount = 0;
+	// How many times the seed endpoint was actually reached. `seedCount` is the
+	// number of rows it makes the page render; this is the number of POSTs, and
+	// it is the only way to tell "the ancestor was replayed once to reach the
+	// child" from "the ancestor was captured as a state of its own too".
+	let seedHits = 0;
+	// `/once` answers the first request and 500s afterwards. It is the only
+	// asymmetry available between a capture and its video replay, which by
+	// design run the same script against the same URL.
+	let onceCount = 0;
+	// A second origin on the same host, and the count of requests that reached
+	// it. The runtime `request` gate is the only thing standing between a
+	// script that navigates here and a POST the states file never declared.
+	let otherServer: http.Server;
+	let otherBaseUrl: string;
+	let otherHits = 0;
 
 	const PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>fixture console</title>
@@ -203,12 +219,31 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 	beforeAll(async () => {
 		server = http.createServer((req, res) => {
 			const url = new URL(req.url ?? "/", "http://127.0.0.1");
+			if (url.pathname === "/once") {
+				onceCount += 1;
+				if (onceCount > 1) {
+					res.writeHead(500, { "content-type": "text/html; charset=utf-8" });
+					res.end("<!doctype html><html><body><h1>gone</h1></body></html>");
+					return;
+				}
+				res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				res.end(PAGE_HTML.replace("{ROWS}", ""));
+				return;
+			}
+			if (url.pathname === "/hop") {
+				res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				res.end(
+					`<!doctype html><html><body data-app-ready><a id="hop" href="${otherBaseUrl}">go</a></body></html>`,
+				);
+				return;
+			}
 			if (url.pathname === "/api/seed") {
 				if (req.method !== "POST") {
 					res.writeHead(405).end();
 					return;
 				}
 				seedCount = 3;
+				seedHits += 1;
 				res.writeHead(201, { "content-type": "application/json" });
 				res.end('{"ok":true}');
 				return;
@@ -220,6 +255,24 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 			res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 			res.end(PAGE_HTML.replace("{ROWS}", rows));
 		});
+		otherServer = http.createServer((req, res) => {
+			const url = new URL(req.url ?? "/", "http://127.0.0.1");
+			if (url.pathname === "/api/pwn") {
+				otherHits += 1;
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end('{"ok":true}');
+				return;
+			}
+			res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+			res.end(
+				"<!doctype html><html><body data-app-ready><h1>elsewhere</h1></body></html>",
+			);
+		});
+		await new Promise<void>((resolve) =>
+			otherServer.listen(0, "127.0.0.1", () => resolve()),
+		);
+		otherBaseUrl = `http://127.0.0.1:${(otherServer.address() as AddressInfo).port}/`;
+
 		await new Promise<void>((resolve) =>
 			server.listen(0, "127.0.0.1", () => resolve()),
 		);
@@ -229,6 +282,7 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 
 	afterAll(async () => {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await new Promise<void>((resolve) => otherServer.close(() => resolve()));
 		await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
 	});
 
@@ -461,6 +515,70 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		await expect(fs.readdir(dir)).resolves.toEqual(["ui-capture.states.json"]);
 	}, 60_000);
 
+	it("re-judges a request against the origin the script actually navigated to", async () => {
+		// The bypass: the pre-launch pass validates `/api/pwn` against the
+		// state's configured URL, which is on the seed origin and passes. The
+		// script then navigates to a different origin, where the same relative
+		// path resolves somewhere the file never declared. The gate that
+		// decides therefore has to run at the moment the step resolves.
+		const dir = await outDir("gate-runtime");
+		otherHits = 0;
+		const states = await writeStatesFile(dir, [
+			{
+				name: "hop",
+				url: "/hop",
+				steps: [
+					{ kind: "click", selector: "#hop", settleMs: 300 },
+					{ kind: "waitFor", selector: "h1" },
+					{ kind: "request", method: "POST", path: "/api/pwn" },
+				],
+			},
+		]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			allowStateRequests: true,
+			states,
+		});
+
+		const report = await readReport(dir);
+		expect(report.results[0].stateStatus).toBe("failed");
+		expect(report.results[0].error).toContain("outside the allowed origins");
+		// The point of the whole exercise: the other origin was never touched.
+		expect(otherHits).toBe(0);
+	}, 120_000);
+
+	it("fails a state whose precondition cannot be evaluated, rather than skipping it", async () => {
+		// A typo'd selector answering "not present here" is the worst outcome
+		// available: a green run that captured nothing, and nothing in the
+		// report to notice.
+		const dir = await outDir("precondition-broken");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "typo",
+				precondition: "##panel",
+				preconditionTimeoutMs: 1500,
+				steps: [{ kind: "click", selector: "#reveal" }],
+			},
+		]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			states,
+		});
+
+		const report = await readReport(dir);
+		expect(report.skippedStates).toBe(0);
+		expect(report.failedCaptures).toBe(1);
+		const typo = report.results.find(
+			(r: { state?: string }) => r.state === "typo",
+		);
+		expect(typo.stateStatus).toBe("failed");
+		expect(typo.error).toContain("precondition");
+	}, 120_000);
+
 	it("records an unmet precondition as skipped, not failed", async () => {
 		const dir = await outDir("precondition");
 		const states = await writeStatesFile(dir, [
@@ -482,6 +600,9 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		await capture(baseUrl, {
 			...baseConfig(dir),
 			captureRoutes: false,
+			// The default probe budget is 10s; an absent precondition pays it in
+			// full, and this test has two states to get through.
+			preconditionTimeout: 1500,
 			states,
 		});
 
@@ -496,6 +617,145 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		expect(absent.error).toBeUndefined();
 		const md = await fs.readFile(path.join(dir, "REPORT.md"), "utf8");
 		expect(md).toContain("– skipped");
+	}, 120_000);
+
+	it("spends the state budget on reaching the state, not on capturing it", async () => {
+		// The budget used to wrap the capture too, which made it unsatisfiable:
+		// with --video on, no default could cover navigation + script + a
+		// screenshot per viewport + a recording per viewport, so every state
+		// timed out. Here the whole run deliberately outlives the budget.
+		const dir = await outDir("budget-scope");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "revealed",
+				steps: [
+					{ kind: "waitFor", selector: "[data-app-ready]" },
+					{ kind: "click", selector: "#reveal", settleMs: 100 },
+					{ kind: "waitFor", selector: "#panel-inner", state: "visible" },
+				],
+			},
+		]);
+
+		const budgetMs = 2500;
+		const startedAt = Date.now();
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			captureVideo: true,
+			videoOptions: { duration: 4000, interactions: false },
+			stateTimeout: budgetMs,
+			states,
+		});
+		const elapsed = Date.now() - startedAt;
+
+		const report = await readReport(dir);
+		expect(report.results[0].stateStatus).toBe("captured");
+		expect(report.failedCaptures).toBe(0);
+		expect(report.results[0].hasVideo).toBe(true);
+		// The proof that the budget no longer covers capture: the state was
+		// captured even though the work took longer than the budget allows.
+		expect(elapsed).toBeGreaterThan(budgetMs);
+		expect(
+			(await fs.stat(shot(dir, "root", "states", "revealed"))).size,
+		).toBeGreaterThan(0);
+	}, 180_000);
+
+	it("keeps the screenshots when the video replay fails", async () => {
+		// The stills are on disk before recording starts. Losing the video must
+		// not discard them or turn a capture that produced files into a failure
+		// that reports none.
+		const dir = await outDir("video-partial");
+		onceCount = 0;
+		const states = await writeStatesFile(dir, [
+			{
+				name: "replay-loses",
+				url: "/once",
+				steps: [
+					{ kind: "waitFor", selector: "[data-app-ready]", timeoutMs: 2000 },
+					{ kind: "click", selector: "#reveal", settleMs: 100 },
+				],
+			},
+		]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			captureVideo: true,
+			videoOptions: { duration: 1000, interactions: false },
+			states,
+		});
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.stateStatus).toBe("captured");
+		expect(result.screenshots).toEqual(["desktop"]);
+		expect(result.hasVideo).toBe(false);
+		expect(result.videoErrors).toHaveLength(1);
+		expect(result.videoErrors[0]).toContain("desktop");
+		expect(report.failedCaptures).toBe(0);
+		expect(report.successfulCaptures).toBe(1);
+		expect(
+			(await fs.stat(shot(dir, "once", "states", "replay-loses"))).size,
+		).toBeGreaterThan(0);
+		const md = await fs.readFile(path.join(dir, "REPORT.md"), "utf8");
+		expect(md).toContain("**Video capture failed:**");
+	}, 180_000);
+
+	it("names what it was doing when the budget expired, not the last step it started", async () => {
+		const dir = await outDir("budget-phase");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "no-time",
+				timeoutMs: 1,
+				steps: [{ kind: "waitFor", selector: "[data-app-ready]" }],
+			},
+		]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			states,
+		});
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.stateStatus).toBe("failed");
+		expect(result.error).toContain("timed out after 1ms");
+		expect(result.error).toContain("while loading");
+		// A step index would point the reader at a step that never ran.
+		expect(result.failedStepIndex).toBe(-1);
+	}, 60_000);
+
+	it("names the step that was actually running when the budget expired", async () => {
+		// The other half of the same claim: when a step *is* what is running,
+		// the message and `failedStepIndex` name that step — not the state, and
+		// not a step that already succeeded.
+		const dir = await outDir("budget-in-step");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "hangs-on-step-1",
+				// Comfortably past a local navigation, and well short of the step's
+				// own 60 s timeout, so the *state* budget is what expires.
+				timeoutMs: 2500,
+				steps: [
+					{ kind: "waitFor", selector: "[data-app-ready]" },
+					{ kind: "waitFor", selector: "#never-appears", timeoutMs: 60_000 },
+				],
+			},
+		]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			states,
+		});
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.stateStatus).toBe("failed");
+		expect(result.error).toContain("timed out after 2500ms");
+		expect(result.error).toContain('on step 1 (waitFor "#never-appears")');
+		expect(result.failedStepIndex).toBe(1);
 	}, 120_000);
 
 	it("restricts a state to the viewports it is valid at", async () => {
@@ -529,6 +789,182 @@ describe.skipIf(!RUN)("integration: scripted states", () => {
 		const files = (await fs.readdir(pngDir)).sort();
 		expect(files).toEqual(["desktop_1280x720_latest.png", "history"]);
 	}, 120_000);
+
+	/** The two states a `--state-filter` run has to tell apart. */
+	const seedChain = [
+		{
+			name: "seeded",
+			// The opt-out lives on the ancestor, and the `request` step it opts
+			// out of is inherited with it — the pair a filtered run must not split.
+			allowVideoReplay: true,
+			steps: [
+				{ kind: "waitFor", selector: "[data-app-ready]" },
+				{
+					kind: "request",
+					method: "POST",
+					path: "/api/seed",
+					expectStatus: 201,
+				},
+				{ kind: "reload", waitUntil: "networkidle" },
+			],
+		},
+		{
+			name: "seeded-rows",
+			extends: "seeded",
+			steps: [{ kind: "waitFor", selector: ".seeded-row", minCount: 3 }],
+		},
+	] as const;
+
+	it("captures only the named state, replaying its ancestor rather than capturing it", async () => {
+		const dir = await outDir("filter");
+		seedCount = 0;
+		seedHits = 0;
+		const parsed = await writeStatesFile(dir, [...seedChain]);
+		// Exactly what the CLI does for `--state-filter seeded-rows`.
+		const selected = filterStates(parsed, ["seeded-rows"]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			allowStateRequests: true,
+			states: selected,
+		});
+
+		const report = await readReport(dir);
+		expect(report.results.map((r: { state: string }) => r.state)).toEqual([
+			"seeded-rows",
+		]);
+		expect(report.results[0].stateStatus).toBe("captured");
+		// The ancestor is resolution input, not a capture target: its seed ran
+		// once, to reach the named state. Capturing it too would POST twice.
+		expect(seedHits).toBe(1);
+		await expect(
+			fs.stat(path.join(dir, "root", "states", "seeded")),
+		).rejects.toThrow();
+		expect(
+			(await fs.stat(shot(dir, "root", "states", "seeded-rows"))).size,
+		).toBeGreaterThan(0);
+	}, 120_000);
+
+	it("keeps the ancestor's allowVideoReplay when the chain is flattened by the filter", async () => {
+		// Flattening used to carry the ancestor's `request` step but not its
+		// opt-out, so the same file recorded video unfiltered and silently
+		// dropped it under --state-filter.
+		const dir = await outDir("filter-video");
+		seedCount = 0;
+		seedHits = 0;
+		const parsed = await writeStatesFile(dir, [...seedChain]);
+		const selected = filterStates(parsed, ["seeded-rows"]);
+
+		await capture(baseUrl, {
+			...baseConfig(dir),
+			captureRoutes: false,
+			allowStateRequests: true,
+			captureVideo: true,
+			videoOptions: { duration: 1000, interactions: false },
+			states: selected,
+		});
+
+		const report = await readReport(dir);
+		expect(report.results[0].stateStatus).toBe("captured");
+		expect(report.results[0].hasVideo).toBe(true);
+		// Once for the stills, once for the replay the opt-out permits.
+		expect(seedHits).toBe(2);
+	}, 180_000);
+
+	it("leaves no browser context alive when a state fails or is interrupted", async () => {
+		const dir = await outDir("contexts");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "ok",
+				steps: [{ kind: "waitFor", selector: "[data-app-ready]" }],
+			},
+			{
+				name: "script-fails",
+				steps: [
+					{ kind: "waitFor", selector: "#never-appears", timeoutMs: 500 },
+				],
+			},
+			{
+				// A budget this small interrupts the fiber mid-navigation, which is
+				// the interruption path — not merely an error return.
+				name: "budget-interrupted",
+				timeoutMs: 1,
+				steps: [{ kind: "waitFor", selector: "[data-app-ready]" }],
+			},
+		]);
+
+		// Counted at the last moment it can still be non-zero: after the run has
+		// finished with the browser, before the browser is torn down.
+		const liveAtClose: number[] = [];
+		const realLaunch = chromium.launch;
+		chromium.launch = async (options) => {
+			const browser = await realLaunch.call(chromium, options);
+			const realClose = browser.close.bind(browser);
+			browser.close = async (closeOptions?: { reason?: string }) => {
+				liveAtClose.push(browser.contexts().length);
+				await realClose(closeOptions);
+			};
+			return browser;
+		};
+
+		try {
+			await capture(baseUrl, {
+				...baseConfig(dir),
+				captureRoutes: false,
+				states,
+			});
+		} finally {
+			chromium.launch = realLaunch;
+		}
+
+		const report = await readReport(dir);
+		expect(
+			report.results.map((r: { stateStatus: string }) => r.stateStatus).sort(),
+		).toEqual(["captured", "failed", "failed"]);
+		// The assertion that matters is this one, not the absence of an error:
+		// every context the run opened — worker, state and video — was closed
+		// before the browser was.
+		expect(liveAtClose).toEqual([0]);
+	}, 120_000);
+
+	it("captures a state under the shipped defaults with video, without timing out", async () => {
+		// No stateTimeout, no viewport list, no waitTime, no videoOptions: the
+		// configuration a user gets from `--video` alone, which is exactly the
+		// one that used to make every state time out.
+		const dir = await outDir("defaults-video");
+		const states = await writeStatesFile(dir, [
+			{
+				name: "revealed",
+				steps: [
+					{ kind: "waitFor", selector: "[data-app-ready]" },
+					{ kind: "click", selector: "#reveal", settleMs: 100 },
+					{ kind: "waitFor", selector: "#panel-inner", state: "visible" },
+				],
+			},
+		]);
+
+		await capture(baseUrl, {
+			outputDir: dir,
+			captureVideo: true,
+			captureRoutes: false,
+			states,
+		});
+
+		const report = await readReport(dir);
+		const result = report.results[0];
+		expect(result.stateStatus).toBe("captured");
+		expect(result.error).toBeUndefined();
+		expect(result.videoErrors).toBeUndefined();
+		// All three default viewports, each with its own recording.
+		expect([...result.screenshots].sort()).toEqual([
+			"desktop",
+			"mobile",
+			"tablet",
+		]);
+		expect(result.hasVideo).toBe(true);
+		expect(report.failedCaptures).toBe(0);
+	}, 300_000);
 
 	it("aborts on an authoring error before the browser launches", async () => {
 		const dir = await outDir("authoring");
