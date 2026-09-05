@@ -229,6 +229,14 @@ export class CaptureState extends S.Class<CaptureState>("CaptureState")({
 	 * every configured viewport.
 	 */
 	viewports: S.optional(S.Array(S.String).pipe(S.minItems(1))),
+	/**
+	 * Load milestone for THIS state's navigation, overriding the run's default.
+	 * Present so one stubborn realtime view does not force the whole run onto a
+	 * weaker milestone than the rest of the app deserves.
+	 */
+	waitUntil: S.optional(
+		S.Literal("load", "domcontentloaded", "networkidle", "commit"),
+	),
 	steps: S.Array(CaptureStep),
 	/**
 	 * Budget for *reaching* this state — navigation, the `precondition` probe
@@ -342,6 +350,33 @@ const CaptureConfigFields = {
 	 */
 	colorScheme: S.Literal("light", "dark", "no-preference"),
 	/**
+	 * Whether to proceed past an invalid TLS certificate.
+	 *
+	 * Off by default: silently trusting any certificate is not something a
+	 * capture tool should do on a caller's behalf, and a public site presenting
+	 * a bad certificate is a finding rather than an inconvenience.
+	 *
+	 * It exists because the most common capture target of all — an app on
+	 * localhost — routinely serves HTTPS from a self-signed development
+	 * certificate, and a framework that redirects HTTP to HTTPS leaves no
+	 * plain-HTTP door to use instead. Without this the run fails in a way that
+	 * reads like a broken script: every navigation times out, so `waitFor`
+	 * steps report selectors that "never became visible" and preconditions
+	 * report elements "not present" — on a page that never loaded at all.
+	 */
+	ignoreHttpsErrors: S.Boolean,
+	/**
+	 * The load milestone a navigation waits for before a page is considered ready.
+	 *
+	 * Defaults to `"networkidle"`, which is right for a document that finishes
+	 * fetching and then goes quiet. It is WRONG, and unreachable, for an app that
+	 * holds a connection open — a WebSocket, SSE, or long-poll — because the
+	 * network never goes idle and every navigation fails on timeout instead.
+	 * A realtime console is exactly the kind of app worth capturing, so the
+	 * milestone is configurable rather than assumed.
+	 */
+	waitUntil: S.Literal("load", "domcontentloaded", "networkidle", "commit"),
+	/**
 	 * Named interaction scripts run before capture. Empty by default, so a run
 	 * without a states file behaves exactly as it always has.
 	 */
@@ -401,6 +436,8 @@ export class CaptureConfig extends S.Class<CaptureConfig>("CaptureConfig")(
 		warmupScroll: true,
 		launchArgs: [],
 		colorScheme: "light",
+		ignoreHttpsErrors: false,
+		waitUntil: "networkidle",
 		states: [],
 		stateTimeout: 60000,
 		preconditionTimeout: DEFAULT_PRECONDITION_TIMEOUT_MS,
@@ -473,6 +510,8 @@ export type CaptureConfigOverrides = Partial<{
 	warmupScroll: boolean;
 	launchArgs: ReadonlyArray<string>;
 	colorScheme: "light" | "dark" | "no-preference";
+	ignoreHttpsErrors: boolean;
+	waitUntil: "load" | "domcontentloaded" | "networkidle" | "commit";
 	states: ReadonlyArray<CaptureStateInput>;
 	stateTimeout: number;
 	preconditionTimeout: number;
@@ -539,6 +578,8 @@ export const createCaptureConfig = (
 			? Array.from(overrides.launchArgs)
 			: base.launchArgs,
 		colorScheme: overrides.colorScheme ?? base.colorScheme,
+		ignoreHttpsErrors: overrides.ignoreHttpsErrors ?? base.ignoreHttpsErrors,
+		waitUntil: overrides.waitUntil ?? base.waitUntil,
 		stateTimeout: overrides.stateTimeout ?? base.stateTimeout,
 		preconditionTimeout:
 			overrides.preconditionTimeout ?? base.preconditionTimeout,

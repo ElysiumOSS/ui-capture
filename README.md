@@ -198,6 +198,15 @@ Options:
                               (warm-up triggers lazy-load + scroll-reveal
                               animations so screenshots capture real content)
   --ffmpeg <path>             ffmpeg binary path (default: ffmpeg)
+  --wait-until <state>        Load milestone a navigation waits for: load,
+                              domcontentloaded, networkidle, commit
+                              (default: networkidle). An app holding a socket
+                              open never goes idle, so a realtime console needs
+                              domcontentloaded or its navigations all time out
+  --ignore-https-errors       Proceed past an invalid TLS certificate. Needed for a
+                              local dev server on HTTPS with a self-signed cert,
+                              which otherwise fails as navigation timeouts that
+                              look like broken selectors
   --launch-args <args>        Extra Chromium switches, whitespace separated
                               (e.g. to enable an experimental web platform
                               feature the captured page depends on)
@@ -363,6 +372,8 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 | `colorScheme`               | `--color-scheme`        | `"light" \| "dark" \| "no-preference"` | `"light"`              | The `prefers-color-scheme` reported to the page, applied to both the screenshot and video contexts; the default matches Playwright's, so existing captures are unchanged. |
 | `ffmpegPath`                | `--ffmpeg`              | `string`                   | `"ffmpeg"`                         | Absolute path or anything on `PATH`. |
 | `launchArgs`                | `--launch-args`         | `string[]`                 | `[]`                               | Appended after the baseline switches so they win on conflict; the CLI value splits on whitespace rather than commas, since one switch may itself contain commas. |
+| `ignoreHttpsErrors`        | `--ignore-https-errors` | `boolean`                  | `false`                            | Off by default because silently trusting any certificate is not a capture tool's call to make, and a public site with a bad certificate is a finding. Exists for the commonest target of all: an app on localhost serving HTTPS from a self-signed dev certificate, behind a framework that redirects HTTP to HTTPS so there is no plain-HTTP door. |
+| `waitUntil`                | `--wait-until`          | `"load" \| "domcontentloaded" \| "networkidle" \| "commit"` | `"networkidle"`                    | Right for a document that fetches and goes quiet; unreachable for an app holding a WebSocket, SSE or long-poll open, where the network never idles and every navigation times out. A state may override it with its own `waitUntil`. |
 | `states`                    | `--states`              | `CaptureState[]`           | `[]`                               | Named interaction scripts, each yielding its own capture set; empty by default, so a run without a states file behaves exactly as it always has. |
 | `stateTimeout`              | `--state-timeout`       | `int ≥ 1` (ms)             | `60000`                            | Budget for *reaching* a state — navigation, the `precondition` probe and the script; screenshot and video capture sit outside it, and a state may override it with its own `timeoutMs`. |
 | `preconditionTimeout`       | `--precondition-timeout`| `int ≥ 1` (ms)             | `10000`                            | Budget for a state's `precondition` probe: long enough for an app whose first meaningful frame lands after `networkidle` — a probe that gives up first records the state as `skipped` rather than slow — and short enough that a state which genuinely is not here skips cheaply; a state may override it with its own `preconditionTimeoutMs`. |

@@ -98,6 +98,15 @@ Options:
                               (warm-up triggers lazy-load + scroll-reveal
                               animations so screenshots capture real content)
   --ffmpeg <path>             ffmpeg binary path (default: ffmpeg)
+  --wait-until <state>        Load milestone a navigation waits for: load,
+                              domcontentloaded, networkidle, commit
+                              (default: networkidle). An app holding a socket
+                              open never goes idle, so a realtime console needs
+                              domcontentloaded or its navigations all time out
+  --ignore-https-errors       Proceed past an invalid TLS certificate. Needed for a
+                              local dev server on HTTPS with a self-signed cert,
+                              which otherwise fails as navigation timeouts that
+                              look like broken selectors
   --launch-args <args>        Extra Chromium switches, whitespace separated
                               (e.g. to enable an experimental web platform
                               feature the captured page depends on)
@@ -228,6 +237,25 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 
 	const menuSelectors = parseList(opts["menu-selectors"]);
 	if (menuSelectors) overrides.menuInteractionSelectors = menuSelectors;
+
+	if (opts["ignore-https-errors"] === true) {
+		overrides.ignoreHttpsErrors = true;
+	}
+
+	const waitUntil = opts["wait-until"];
+	if (waitUntil !== undefined) {
+		if (
+			waitUntil !== "load" &&
+			waitUntil !== "domcontentloaded" &&
+			waitUntil !== "networkidle" &&
+			waitUntil !== "commit"
+		) {
+			throw new Error(
+				`Invalid --wait-until "${String(waitUntil)}". Expected load, domcontentloaded, networkidle, or commit.`,
+			);
+		}
+		overrides.waitUntil = waitUntil;
+	}
 
 	const colorScheme = opts["color-scheme"];
 	if (colorScheme !== undefined) {
