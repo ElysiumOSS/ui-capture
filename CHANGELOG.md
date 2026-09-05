@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0](https://github.com/ElysiumOSS/ui-capture/compare/0.4.0...0.5.0) (2026-09-05)
+
+### Features
+
+* --ignore-https-errors and --wait-until ([270d313](https://github.com/ElysiumOSS/ui-capture/commit/270d31329a1d1f8718fd2bf8b0050eb2e2f5e446))
+
 ## [0.4.0](https://github.com/ElysiumOSS/ui-capture/compare/0.3.0...0.4.0) (2026-09-04)
 
 ### Features
