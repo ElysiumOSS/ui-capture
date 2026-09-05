@@ -38,6 +38,7 @@ export interface CaptureVideoConfig {
 	};
 	/** Must match the screenshot context, or a run's stills and video disagree. */
 	readonly colorScheme: "light" | "dark" | "no-preference";
+	readonly ignoreHttpsErrors: boolean;
 	/**
 	 * Where the capture began — the URL the recording context navigates to
 	 * before {@link prepare} replays the script.
@@ -91,6 +92,7 @@ export const captureVideoForViewport = (
 					},
 					viewport: { width: viewport.width, height: viewport.height },
 					colorScheme: cfg.colorScheme,
+					ignoreHTTPSErrors: cfg.ignoreHttpsErrors,
 				}),
 			catch: (error) =>
 				new CaptureError({

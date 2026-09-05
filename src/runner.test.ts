@@ -62,6 +62,47 @@ describe("buildInvocation", () => {
 		).toThrow(/Invalid --color-scheme/);
 	});
 
+	it("leaves TLS strictness alone unless asked", () => {
+		// Default matters: silently trusting any certificate is not something a
+		// capture tool should decide on a caller's behalf.
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.overrides.ignoreHttpsErrors).toBeUndefined();
+	});
+
+	it("accepts --ignore-https-errors", () => {
+		const inv = buildInvocation(
+			parseCliArgs(["https://example.com", "--ignore-https-errors"]),
+		);
+		expect(inv.overrides.ignoreHttpsErrors).toBe(true);
+	});
+
+	it("leaves the load milestone unset so the default applies", () => {
+		const inv = buildInvocation(parseCliArgs(["https://example.com"]));
+		expect(inv.overrides.waitUntil).toBeUndefined();
+	});
+
+	it("accepts each load milestone Playwright supports", () => {
+		for (const state of [
+			"load",
+			"domcontentloaded",
+			"networkidle",
+			"commit",
+		] as const) {
+			const inv = buildInvocation(
+				parseCliArgs(["https://example.com", "--wait-until", state]),
+			);
+			expect(inv.overrides.waitUntil).toBe(state);
+		}
+	});
+
+	it("rejects a load milestone Playwright would not accept", () => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs(["https://example.com", "--wait-until", "eventually"]),
+			),
+		).toThrow(/Invalid --wait-until/);
+	});
+
 	const cwd = process.cwd();
 
 	it("rejects calls without a positional URL", () => {

@@ -101,6 +101,18 @@ const NO_VIDEO_CAPTURED: ViewportVideoOutcome = {
  * Exported so the test that bypasses the schema's `minItems(1)` guard asserts
  * on the same string the service reports, rather than on a copy of it.
  */
+/**
+ * The load state to wait for, given the configured navigation milestone.
+ *
+ * `waitForLoadState` has no `"commit"`; a caller asking for the earliest possible
+ * milestone is asking not to wait, so it degrades to `domcontentloaded` rather
+ * than silently reinstating the `networkidle` this exists to avoid.
+ */
+const loadStateFor = (
+	waitUntil: "load" | "domcontentloaded" | "networkidle" | "commit",
+): "load" | "domcontentloaded" | "networkidle" =>
+	waitUntil === "commit" ? "domcontentloaded" : waitUntil;
+
 export const EMPTY_STATE_CAPTURE_MESSAGE =
 	"no screenshots were captured: the state resolved to zero viewports, and a state that captured nothing must not be reported as captured";
 
@@ -262,7 +274,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 
 					yield* createDirectories(captureDir, wantVideo);
 					yield* Effect.tryPromise({
-						try: () => page.waitForLoadState("networkidle"),
+						try: () => page.waitForLoadState(loadStateFor(cfg.waitUntil)),
 						catch: (error) =>
 							new CaptureError({
 								url,
@@ -283,7 +295,9 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 						);
 						yield* Effect.tryPromise({
 							try: () =>
-								page.waitForLoadState("networkidle", { timeout: 10000 }),
+								page.waitForLoadState(loadStateFor(cfg.waitUntil), {
+									timeout: 10000,
+								}),
 							catch: () => undefined,
 						}).pipe(Effect.catchAll(() => Effect.void));
 					}
@@ -322,6 +336,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 												ffmpegPath: cfg.ffmpegPath,
 												videoOptions: cfg.videoOptions,
 												colorScheme: cfg.colorScheme,
+												ignoreHttpsErrors: cfg.ignoreHttpsErrors,
 												// Where this capture began, not `page.url()`: a
 												// scripted state has already driven the page, so
 												// its current URL is where the script *ended* —
@@ -424,7 +439,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 
 					yield* Effect.tryPromise({
 						try: () =>
-							page.goto(task.url, { waitUntil: "networkidle", timeout: 30000 }),
+							page.goto(task.url, { waitUntil: cfg.waitUntil, timeout: 30000 }),
 						catch: (error) =>
 							new CaptureError({
 								url: task.url,
@@ -572,7 +587,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 								try: () =>
 									page
 										.goto(task.url, {
-											waitUntil: "networkidle",
+											waitUntil: state.waitUntil ?? cfg.waitUntil,
 											timeout: STATE_NAVIGATION_TIMEOUT_MS,
 										})
 										.then(() => undefined),
@@ -643,7 +658,10 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 							const browserRef = browser;
 							return yield* Effect.tryPromise({
 								try: () =>
-									browserRef.newContext({ colorScheme: cfg.colorScheme }),
+									browserRef.newContext({
+										colorScheme: cfg.colorScheme,
+										ignoreHTTPSErrors: cfg.ignoreHttpsErrors,
+									}),
 								catch: (error) =>
 									stateFailure("failed to create a browser context", error),
 							});
@@ -955,6 +973,7 @@ export class UICaptureService extends Effect.Service<UICaptureService>()(
 												try: () =>
 													browserRef.newContext({
 														colorScheme: cfg.colorScheme,
+														ignoreHTTPSErrors: cfg.ignoreHttpsErrors,
 													}),
 												catch: (error) =>
 													new CaptureError({
