@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { USAGE } from "./runner.js";
 import { CaptureConfig, CaptureStep } from "./schemas.js";
+import { parseShowcaseFile, validateShowcase } from "./showcase-schema.js";
 
 /**
  * Documentation drift is the defect class that survives every other test: the
@@ -78,5 +79,26 @@ describe("README ↔ schema", () => {
 			expect(row, `README has no config row for ${field}`).toBeDefined();
 			expect(row, `${field} row does not show ${rendered}`).toContain(rendered);
 		}
+	});
+});
+
+describe("showcase examples", () => {
+	it.each([
+		"showcase.json",
+		"portfolio.showcase.json",
+	])("validates %s against the shipped schema", (filename) => {
+		const definition = parseShowcaseFile(
+			readFileSync(new URL(`../examples/${filename}`, import.meta.url), "utf8"),
+			filename,
+		);
+		expect(() =>
+			validateShowcase(
+				definition,
+				filename.startsWith("portfolio")
+					? "https://mikeodnis.dev"
+					: "http://localhost:5173",
+				CaptureConfig.Default,
+			),
+		).not.toThrow();
 	});
 });

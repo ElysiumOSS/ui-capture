@@ -20,6 +20,8 @@ import path from "node:path";
 import { Effect } from "effect";
 import type { CaptureConfigOverrides, CaptureState } from "./schemas.js";
 import { CaptureConfigLive, UICaptureService } from "./service.js";
+import { captureShowcase } from "./showcase.js";
+import { parseShowcaseFile } from "./showcase-schema.js";
 import { filterStates, parseStatesFile, statesUseRequests } from "./states.js";
 import { type ParsedArgs, parseArgs } from "./utils/args.js";
 
@@ -38,7 +40,7 @@ const BOOLEAN_FLAGS = [
  * Options whose value is allowed to look like a flag. Chromium switches start
  * with `--`, so the parser has to be told not to mistake them for options.
  */
-const VALUE_FLAGS = ["launch-args", "states", "state-filter"];
+const VALUE_FLAGS = ["launch-args", "states", "state-filter", "showcase"];
 
 export const USAGE = `Usage: ui-capture <url> [options]
 
@@ -62,7 +64,7 @@ Options:
                               (this opens menus so links become discoverable;
                               it is not a capture-state mechanism — see
                               --states for that)
-  --states <path>             JSON file of named interaction scripts. Each
+  --showcase <path>           Record one continuous scripted tour as MP4, with\n                              scene stills, captions and a report (exclusive mode;\n                              default viewport: desktop:1920x1080)\n  --states <path>             JSON file of named interaction scripts. Each
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
                               app's dialogs and workspaces get captured too.
@@ -191,6 +193,7 @@ export interface CliInvocation {
 	 * so reading and parsing happens in `runFromArgs`, at the edge.
 	 */
 	readonly statesPath?: string;
+	readonly showcasePath?: string;
 	readonly stateFilter?: ReadonlyArray<string>;
 	readonly failOnStateError: boolean;
 }
@@ -208,6 +211,32 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 
 	const opts = parsed.options;
 	const overrides: CaptureConfigOverrides = {};
+	const showcase = opts.showcase;
+	if (showcase !== undefined) {
+		if (typeof showcase !== "string" || showcase.trim() === "")
+			throw new Error("--showcase requires a JSON file path");
+		const exclusive = [
+			"states",
+			"state-filter",
+			"skip-routes",
+			"state-timeout",
+			"precondition-timeout",
+			"fail-on-state-error",
+			"video",
+			"video-duration",
+			"no-interactions",
+			"max-depth",
+			"concurrency",
+			"menu-selectors",
+			"hide",
+			"no-warmup",
+			"wait",
+		];
+		const conflict = exclusive.find((flag) => opts[flag] !== undefined);
+		if (conflict)
+			throw new Error(`--showcase cannot be combined with --${conflict}`);
+		overrides.viewports = [{ name: "desktop", width: 1920, height: 1080 }];
+	}
 
 	const outputDir = opts["output-dir"];
 	overrides.outputDir =
@@ -329,6 +358,9 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 		url,
 		overrides,
 		...(statesPath !== undefined ? { statesPath } : {}),
+		...(typeof showcase === "string"
+			? { showcasePath: path.resolve(process.cwd(), showcase) }
+			: {}),
 		...(stateFilter ? { stateFilter } : {}),
 		failOnStateError: opts["fail-on-state-error"] === true,
 	};
@@ -380,6 +412,36 @@ export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
 		process.exit(1);
 	}
 
+	if (invocation.showcasePath) {
+		const cancellation = new AbortController();
+		const interrupt = () =>
+			cancellation.abort(new Error("Showcase cancelled by signal"));
+		process.once("SIGINT", interrupt);
+		process.once("SIGTERM", interrupt);
+		try {
+			const showcase = parseShowcaseFile(
+				await fs.readFile(invocation.showcasePath, "utf8"),
+				invocation.showcasePath,
+			);
+			const reports = await captureShowcase(
+				invocation.url,
+				showcase,
+				invocation.overrides,
+				{ signal: cancellation.signal },
+			);
+			for (const report of reports)
+				console.log(
+					`Showcase complete: ${path.join(report.outputDir, "showcase.mp4")}`,
+				);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			process.removeListener("SIGINT", interrupt);
+			process.removeListener("SIGTERM", interrupt);
+		}
+		return;
+	}
 	let states: ReadonlyArray<CaptureState>;
 	try {
 		states = await loadStates(invocation);

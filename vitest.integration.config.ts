@@ -16,7 +16,11 @@ import { defineConfig } from "vitest/config";
 // console-fail-test setup file used by the unit suite.
 export default defineConfig({
 	test: {
-		include: ["src/integration.test.ts"],
+		include: [
+			"src/integration.test.ts",
+			"src/*.integration.test.ts",
+			"src/showcase-export.test.ts",
+		],
 		exclude: ["lib", "node_modules"],
 		testTimeout: 60_000,
 		hookTimeout: 30_000,
