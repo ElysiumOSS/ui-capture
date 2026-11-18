@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { type MusicMixSettings, mixMusic } from "./music-mix.js";
 
 const FRAME_RATE = 30;
 const MAX_RECORDING_SECONDS = 15 * 60 + 60;
@@ -142,6 +143,9 @@ export interface ShowcaseExportOptions {
 	readonly sourcePath: string;
 	readonly outputPath: string;
 	readonly durationMs: number;
+	readonly soundtrack?: string;
+	readonly music?: MusicMixSettings;
+	readonly ffprobePath?: string;
 	readonly signal?: AbortSignal;
 	/** Shared budget for marker detection and encoding. */
 	readonly timeoutMs?: number;
@@ -293,7 +297,16 @@ export const exportShowcase = async (
 		if (signal?.aborted) throw abortError();
 		// A hard link publishes atomically and fails if another run won the name.
 		// Unlike rename, it cannot overwrite a pre-existing result in that race.
-		await fs.link(temporaryPath, outputPath);
+		if (options.soundtrack) {
+			await mixMusic(temporaryPath, options.soundtrack, {
+				outputPath,
+				ffmpegPath,
+				ffprobePath: options.ffprobePath,
+				...options.music,
+				signal,
+				timeoutMs: Math.max(1, deadline - performance.now()),
+			});
+		} else await fs.link(temporaryPath, outputPath);
 		return {
 			trimStartMs,
 			durationMs:
