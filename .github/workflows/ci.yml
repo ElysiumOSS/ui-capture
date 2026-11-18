@@ -110,7 +110,8 @@ jobs:
 
   integration:
     name: Browser and video integration
-    runs-on: ubuntu-latest
+    # Keep the browser job on an OS supported by the locked Playwright release.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
