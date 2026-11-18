@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.0](https://github.com/ElysiumOSS/ui-capture/compare/0.6.0...0.7.0) (2026-11-18)
+
+### Features
+
+* add music discovery and showcase soundtracks ([#14](https://github.com/ElysiumOSS/ui-capture/issues/14)) ([cfc87f2](https://github.com/ElysiumOSS/ui-capture/commit/cfc87f2d659792ce41b9861945aca188a6d4f37f))
+
 ## [0.6.0](https://github.com/ElysiumOSS/ui-capture/compare/0.5.0...0.6.0) (2026-11-18)
 
 ### Features
