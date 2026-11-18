@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.0](https://github.com/ElysiumOSS/ui-capture/compare/0.5.0...0.6.0) (2026-11-18)
+
+### Features
+
+* record continuous showcase tours with upload-ready video ([#11](https://github.com/ElysiumOSS/ui-capture/issues/11)) ([61287ad](https://github.com/ElysiumOSS/ui-capture/commit/61287ad006ceb7475ca193353f7d28bbd4653512))
+
 ## [0.5.0](https://github.com/ElysiumOSS/ui-capture/compare/0.4.0...0.5.0) (2026-09-05)
 
 ### Features
