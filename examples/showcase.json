@@ -1,0 +1,71 @@
+{
+	"version": 1,
+	"name": "website-demo",
+	"title": "Website demo",
+	"cursor": true,
+	"captions": true,
+	"timeoutMs": 120000,
+	"scenes": [
+		{
+			"name": "introduction",
+			"caption": "Explore the website",
+			"readySelector": "main",
+			"steps": [],
+			"holdMs": 3000
+		},
+		{
+			"name": "search-projects",
+			"url": "/projects",
+			"caption": "Find a project by keyword",
+			"readySelector": "input[name='search']",
+			"steps": [
+				{
+					"kind": "type",
+					"selector": "input[name='search']",
+					"value": "design",
+					"delayMs": 100,
+					"settleMs": 500
+				},
+				{
+					"kind": "waitFor",
+					"selector": "[data-demo='result']"
+				}
+			],
+			"holdMs": 4000
+		},
+		{
+			"name": "project-detail",
+			"caption": "Open the project details",
+			"steps": [
+				{
+					"kind": "hover",
+					"selector": "[data-demo='result']",
+					"settleMs": 400
+				},
+				{
+					"kind": "click",
+					"selector": "[data-demo='result']"
+				},
+				{
+					"kind": "waitFor",
+					"selector": "[data-demo='dialog']"
+				}
+			],
+			"holdMs": 4000
+		},
+		{
+			"name": "about",
+			"url": "/about",
+			"caption": "Read more about the work",
+			"readySelector": "main",
+			"steps": [
+				{
+					"kind": "scroll",
+					"y": 600,
+					"durationMs": 900
+				}
+			],
+			"holdMs": 5000
+		}
+	]
+}

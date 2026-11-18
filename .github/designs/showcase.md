@@ -30,14 +30,14 @@ Existing route/state capture behavior stays compatible.
 
 ## Implementation plan
 
-- [ ] Establish the baseline and review the existing schema, scripted runner and video lifecycle.
-- [ ] Add a pure showcase schema/parser with invalid-input and navigation-permission tests.
-- [ ] Implement the continuous recorder and presentation helpers with tests for typing, state continuity, screenshots, deadlines and cleanup.
-- [ ] Add MP4/poster/caption export with argument-safety, timing and failure tests.
-- [ ] Wire the CLI and library exports, document the JSON format and add a reusable example.
-- [ ] Run a real local-browser/FFmpeg integration test and inspect codec, dimensions, timing and frame content.
-- [ ] Run project checks, obtain independent specification and code reviews, and fix findings.
-- [ ] Record and inspect the broader portfolio tour, adjust pacing, and verify its final MP4 against LinkedIn upload limits.
+- [x] Establish the baseline and review the existing schema, scripted runner and video lifecycle.
+- [x] Add a pure showcase schema/parser with invalid-input and navigation-permission tests.
+- [x] Implement the continuous recorder and presentation helpers with tests for typing, state continuity, screenshots, deadlines and cleanup.
+- [x] Add MP4/poster/caption export with argument-safety, timing and failure tests.
+- [x] Wire the CLI and library exports, document the JSON format and add a reusable example.
+- [x] Run a real local-browser/FFmpeg integration test and inspect codec, dimensions, timing and frame content.
+- [x] Run project checks, obtain independent specification and code reviews, and fix findings.
+- [x] Record and inspect the broader portfolio tour, adjust pacing, and verify its final MP4 against LinkedIn upload limits.
 - [ ] Merge through reviewed CI, verify the automatic npm release, and deliver the video and exact replay command.
 
 ## First tour

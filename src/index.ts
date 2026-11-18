@@ -59,6 +59,20 @@ export {
 	UICaptureService,
 	UICaptureService as default,
 } from "./service.js";
+// Continuous, single-execution showcase recordings.
+export {
+	captureShowcase,
+	type ShowcaseOptions,
+	type ShowcaseReport,
+	type ShowcaseSceneResult,
+	type ShowcaseStepResult,
+} from "./showcase.js";
+export {
+	parseShowcaseFile,
+	ShowcaseFile,
+	ShowcaseStep,
+	validateShowcase,
+} from "./showcase-schema.js";
 // Scripted states: parsing, chain resolution and pre-launch validation
 export {
 	filterStates,

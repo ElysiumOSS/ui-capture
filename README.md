@@ -162,6 +162,9 @@ Options:
                               (this opens menus so links become discoverable;
                               it is not a capture-state mechanism — see
                               --states for that)
+  --showcase <path>           Record one continuous scripted tour as MP4, with
+                              scene stills, captions and a report (exclusive mode;
+                              default viewport: desktop:1920x1080)
   --states <path>             JSON file of named interaction scripts. Each
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
@@ -222,6 +225,203 @@ Examples:
   ui-capture http://localhost:5173 --max-depth 0 --states ./ui-capture.states.json
   ui-capture http://localhost:5173 --states ./states.json --state-filter fleet-editor
 ```
+
+## Showcase videos
+
+Record a scripted website demo with `--showcase`, then reuse the same JSON file when the site changes.
+The recorder follows ordered scenes in one browser context at a fixed viewport size, capturing interactions and scene screenshots from the same execution.
+The default is a single landscape recording at `1920×1080`.
+
+```bash
+ui-capture http://localhost:5173 \
+  --showcase ./examples/showcase.json \
+  --output-dir ./demo-take-1 \
+  --wait-until domcontentloaded \
+  --color-scheme dark
+```
+
+Adapt the URLs, selectors and query text in [examples/showcase.json](./examples/showcase.json) to your own site before running it.
+The example opens `/projects`, types a search, opens a result and scrolls `/about`.
+Its selectors describe an example application and must match the page being recorded.
+Use the resulting MP4 in a presentation or upload it to a service such as LinkedIn yourself.
+The command does not publish or post videos.
+
+The [portfolio tour](./examples/portfolio.showcase.json) records the public site at `https://mikeodnis.dev`, including project search, a case study, experience, live activity and consulting.
+Its selectors are tied to that site's current markup; update them when the site changes.
+
+```bash
+ui-capture https://mikeodnis.dev \
+  --showcase ./examples/portfolio.showcase.json \
+  --output-dir ./portfolio-take-1 --color-scheme dark --wait-until networkidle
+```
+
+### Tour format
+
+```json
+{
+  "version": 1,
+  "name": "website-demo",
+  "title": "Website demo",
+  "cursor": true,
+  "captions": true,
+  "timeoutMs": 300000,
+  "scenes": [
+    {
+      "name": "introduction",
+      "caption": "Explore the website",
+      "readySelector": "main",
+      "steps": [],
+      "holdMs": 3000
+    },
+    {
+      "name": "read-more",
+      "steps": [{ "kind": "scroll", "y": 600, "durationMs": 900 }],
+      "holdMs": 4000
+    }
+  ]
+}
+```
+
+| Tour field | Default | Meaning |
+| ---------- | ------- | ------- |
+| `version` | Required | Must be `1`. |
+| `name` | Required | Output directory name, at most 64 characters matching `^[a-z0-9][a-z0-9-]*$`. |
+| `title` | Omitted | Optional report title. |
+| `cursor` | `true` | Display a cursor and click indicator. |
+| `captions` | `true` | Display scene captions inside the viewport's safe margins. |
+| `timeoutMs` | `300000` | Whole-run budget, including all requested viewports and export, from 1 to 900000 ms. |
+| `scenes` | Required | Ordered array of 1–100 scenes, with at most 1000 steps across the tour. |
+
+| Scene field | Default | Meaning |
+| ----------- | ------- | ------- |
+| `name` | Required | Unique scene name using the same naming rules as the tour. |
+| `url` | Omitted | Navigate to this absolute URL or resolve a relative URL against the seed. |
+| `caption` | Omitted | Plain text displayed for this scene and included in the SRT sidecar. |
+| `readySelector` | Omitted | Wait for the first matching element to become visible before the steps begin. |
+| `steps` | Required | Ordered array of 0–200 steps. |
+| `holdMs` | `2000` | Pause after the steps, before the scene screenshot, from 0 to 60000 ms. |
+| `timeoutMs` | `60000` | Scene budget, including navigation, readiness, steps, holds and screenshot, from 1 to 300000 ms. |
+
+When the first scene omits `url`, it opens the command's seed URL.
+Later scenes that omit `url` continue on the current page, preserving searches, open dialogs and navigation performed by earlier steps.
+An explicit `url` navigates even when it points to the same page.
+Names, duplicate scenes, unknown fields, URL schemes and numeric limits are checked before Chromium starts.
+Text fields allow at most 10000 characters and selectors at most 2000.
+
+### Tour steps and pacing
+
+All existing [`CaptureStep` kinds](#step-vocabulary) are available: `waitFor`, `wait`, `click`, `fill`, `select`, `press`, `request` and `reload`.
+Tour recordings also accept these actions:
+
+| Kind | Fields | Behavior |
+| ---- | ------ | -------- |
+| `type` | `selector`, `value`, `delayMs?` (default `80`, range 0–1000), `clear?` (default `true`) | Type characters with a delay between them, clearing the field first unless `clear` is false. |
+| `hover` | `selector`, `nth?` (default `0`) | Move over the matching element at the fixed recording size. |
+| `scroll` | `y`, `x?` (default `0`), `durationMs?` (default `800`, range 0–10000) | Smoothly scroll to absolute document coordinates, or move immediately with `durationMs: 0`. |
+
+Scroll coordinates range from 0 to 1000000 pixels.
+Every step accepts `optional` (default `false`), `timeoutMs` (1–60000 ms) and `settleMs` (0–60000 ms).
+Most actions default to a 5000 ms timeout, so increase `timeoutMs` when typing long text with a deliberate delay.
+The default wait and scroll budgets account for their requested duration.
+An optional action failure appears as `optional-failed` in the report.
+Cancellation, an expired scene budget or blocked navigation still stops the run.
+Use `waitFor` for application readiness and `holdMs` or `settleMs` to give viewers time to read.
+Runtime action and loading times affect the final length, so check the report when targeting a specific duration.
+The JSON format has no user JavaScript or `evaluate` action.
+
+### Permissions, viewports and CLI options
+
+`--showcase` is exclusive: it does not run the crawler or scripted-state capture mode.
+It accepts `--output-dir`, `--viewports`, `--color-scheme`, `--wait-until`, `--ignore-https-errors`, `--launch-args`, `--allowed-hosts`, `--include-subdomains`, `--ffmpeg` and `--allow-state-requests`.
+It rejects `--states`, `--state-filter`, `--skip-routes`, `--state-timeout`, `--precondition-timeout`, `--fail-on-state-error`, `--video`, `--video-duration`, `--no-interactions`, `--max-depth`, `--concurrency`, `--menu-selectors`, `--hide`, `--no-warmup` and `--wait`.
+Set pacing and readiness in the tour file.
+
+An explicit viewport list records each full tour sequentially in a fresh context, once per viewport:
+
+```bash
+ui-capture http://localhost:5173 --showcase ./examples/showcase.json \
+  --viewports desktop:1920x1080,mobile:390x844 --output-dir ./demo-take-2
+```
+
+Each viewport has one execution shared by its video and screenshots.
+With two viewports, every step executes twice, including request steps that change backend data.
+Viewport names must be unique and follow the tour naming rules.
+A tour supports 1–8 viewports, with width and height each from 64 to 4096 pixels.
+
+Request steps require `--allow-state-requests` or `allowStateRequests: true` in the library configuration.
+Scene URLs, top-level navigation and request redirects stay within the allowed host policy and the seed's scheme and port.
+Only HTTP and HTTPS URLs without embedded credentials are accepted.
+The tour uses one page and does not support popups.
+
+### Video and report files
+
+The default example produces:
+
+```text
+demo-take-1/showcases/website-demo/desktop/
+├── showcase.mp4
+├── source.webm
+├── poster.png
+├── captions.srt
+├── report.json
+├── report.md
+└── scenes/
+    ├── introduction.png
+    ├── search-projects.png
+    ├── project-detail.png
+    └── about.png
+```
+
+The final MP4 uses H.264, `yuv420p`, constant 30 fps and fast-start metadata, with no audio track.
+Odd viewport dimensions are padded to the next even pixel for encoding.
+Scene PNGs retain the requested viewport dimensions, and `poster.png` copies the first scene screenshot.
+
+The source WebM retains the initial page load and an internal magenta → cyan → magenta calibration marker.
+The exporter finds that marker in the recorded frames and removes it and the initial load from the final MP4.
+Subsequent scene navigation remains part of the video.
+The exporter also trims recording shutdown padding to the tour duration.
+
+JSON and Markdown reports contain actual scene and step start/end times, results and failure details.
+Times are relative to the start of the tour after calibration.
+The `trimStartMs` field records the offset in the source video.
+SRT cues begin at `captionStartMs`, after navigation and readiness, even when `captions: false` hides the on-screen captions.
+Scene execution timestamps and `executionDurationMs` also account for initial loading before calibration.
+An action failure identifies its scene and zero-based step index, and a failed run exits nonzero without publishing a partial final MP4.
+Available source footage, screenshots and failure reports remain for inspection.
+An existing `showcases/<name>` directory is never overwritten.
+Choose another `--output-dir` or tour name for the next take.
+
+### Tour library API
+
+`captureShowcase(seedUrl, definition, overrides?, { signal? })` returns `Promise<ShowcaseReport[]>`, one report per completed viewport, and rejects on failure.
+The same validation and defaults apply to JSON files and library definitions.
+
+```ts
+import { readFile } from "node:fs/promises";
+import {
+  captureShowcase,
+  parseShowcaseFile,
+} from "@elysiumoss/ui-capture";
+
+const definition = parseShowcaseFile(
+  await readFile("./examples/showcase.json", "utf8"),
+  "examples/showcase.json",
+);
+const controller = new AbortController();
+const reports = await captureShowcase(
+  "http://localhost:5173",
+  definition,
+  { outputDir: "./demo-take-3", waitUntil: "domcontentloaded" },
+  { signal: controller.signal },
+);
+console.log(reports.map((report) => report.outputDir));
+```
+
+Call `controller.abort()` to cancel an active run.
+Cancellation closes the browser context and terminates an active MP4 encoder.
+Context flushing and source artifact finalization each have a 5000 ms cleanup budget; a stalled context triggers browser closure and the run fails.
+Playwright owns the source WebM encoder, so this package bounds its waits but cannot independently terminate that encoder if Playwright itself becomes stuck.
+The encoder has a 120000 ms budget for calibration detection and MP4 encoding, within the whole-run budget.
 
 ## Library
 
@@ -372,8 +572,8 @@ All three errors are `S.TaggedError` subclasses, so they discriminate cleanly un
 | `colorScheme`               | `--color-scheme`        | `"light" \| "dark" \| "no-preference"` | `"light"`              | The `prefers-color-scheme` reported to the page, applied to both the screenshot and video contexts; the default matches Playwright's, so existing captures are unchanged. |
 | `ffmpegPath`                | `--ffmpeg`              | `string`                   | `"ffmpeg"`                         | Absolute path or anything on `PATH`. |
 | `launchArgs`                | `--launch-args`         | `string[]`                 | `[]`                               | Appended after the baseline switches so they win on conflict; the CLI value splits on whitespace rather than commas, since one switch may itself contain commas. |
-| `ignoreHttpsErrors`        | `--ignore-https-errors` | `boolean`                  | `false`                            | Off by default because silently trusting any certificate is not a capture tool's call to make, and a public site with a bad certificate is a finding. Exists for the commonest target of all: an app on localhost serving HTTPS from a self-signed dev certificate, behind a framework that redirects HTTP to HTTPS so there is no plain-HTTP door. |
-| `waitUntil`                | `--wait-until`          | `"load" \| "domcontentloaded" \| "networkidle" \| "commit"` | `"networkidle"`                    | Right for a document that fetches and goes quiet; unreachable for an app holding a WebSocket, SSE or long-poll open, where the network never idles and every navigation times out. A state may override it with its own `waitUntil`. |
+| `ignoreHttpsErrors`        | `--ignore-https-errors` | `boolean`                  | `false`                            | Off by default because silently trusting any certificate is not a capture tool's call to make, and a public site with a bad certificate is a finding; the option exists for the commonest target of all: an app on localhost serving HTTPS from a self-signed dev certificate, behind a framework that redirects HTTP to HTTPS so there is no plain-HTTP door. |
+| `waitUntil`                | `--wait-until`          | `"load" \| "domcontentloaded" \| "networkidle" \| "commit"` | `"networkidle"`                    | Right for a document that fetches and goes quiet; unreachable for an app holding a WebSocket, SSE or long-poll open, where the network never idles and every navigation times out; a state may override it with its own `waitUntil`. |
 | `states`                    | `--states`              | `CaptureState[]`           | `[]`                               | Named interaction scripts, each yielding its own capture set; empty by default, so a run without a states file behaves exactly as it always has. |
 | `stateTimeout`              | `--state-timeout`       | `int ≥ 1` (ms)             | `60000`                            | Budget for *reaching* a state — navigation, the `precondition` probe and the script; screenshot and video capture sit outside it, and a state may override it with its own `timeoutMs`. |
 | `preconditionTimeout`       | `--precondition-timeout`| `int ≥ 1` (ms)             | `10000`                            | Budget for a state's `precondition` probe: long enough for an app whose first meaningful frame lands after `networkidle` — a probe that gives up first records the state as `skipped` rather than slow — and short enough that a state which genuinely is not here skips cheaply; a state may override it with its own `preconditionTimeoutMs`. |

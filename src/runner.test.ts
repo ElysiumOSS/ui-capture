@@ -496,3 +496,62 @@ describe("buildInvocation backwards compatibility", () => {
 		expect(inv.stateFilter).toBeUndefined();
 	});
 });
+
+describe("showcase invocation", () => {
+	it("selects showcase mode with a fixed desktop default", () => {
+		const result = buildInvocation(
+			parseCliArgs(["https://example.com", "--showcase", "tour.json"]),
+		);
+		expect(result.showcasePath).toBe(path.resolve("tour.json"));
+		expect(result.overrides.viewports).toEqual([
+			{ name: "desktop", width: 1920, height: 1080 },
+		]);
+	});
+	it.each([
+		"--states",
+		"--state-filter",
+		"--skip-routes",
+		"--video",
+		"--max-depth",
+		"--menu-selectors",
+	])("rejects ambiguous %s", (flag) => {
+		expect(() =>
+			buildInvocation(
+				parseCliArgs([
+					"https://example.com",
+					"--showcase",
+					"tour.json",
+					flag,
+					"value",
+				]),
+			),
+		).toThrow(/showcase/);
+	});
+	it("rejects a missing showcase path", () => {
+		expect(() =>
+			buildInvocation(parseCliArgs(["https://example.com", "--showcase"])),
+		).toThrow(/showcase.*path/);
+	});
+	it("preserves explicit viewports and shared browser controls", () => {
+		const result = buildInvocation(
+			parseCliArgs([
+				"https://example.com",
+				"--showcase",
+				"tour.json",
+				"--viewports",
+				"mobile:390x844",
+				"--color-scheme",
+				"dark",
+				"--wait-until",
+				"domcontentloaded",
+				"--ignore-https-errors",
+			]),
+		);
+		expect(result.overrides).toMatchObject({
+			viewports: [{ name: "mobile", width: 390, height: 844 }],
+			colorScheme: "dark",
+			waitUntil: "domcontentloaded",
+			ignoreHttpsErrors: true,
+		});
+	});
+});

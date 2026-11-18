@@ -1,0 +1,179 @@
+{
+	"version": 1,
+	"name": "portfolio-tour",
+	"title": "Mike Odnis · Portfolio tour",
+	"cursor": true,
+	"captions": true,
+	"timeoutMs": 240000,
+	"scenes": [
+		{
+			"name": "hello",
+			"caption": "Mike Odnis · Software engineer & founder",
+			"readySelector": "#home-title",
+			"holdMs": 2800,
+			"steps": []
+		},
+		{
+			"name": "find-the-work",
+			"caption": "Explore projects, tools, and experiments",
+			"readySelector": "#home-title",
+			"holdMs": 1400,
+			"steps": [
+				{
+					"kind": "click",
+					"selector": "main a[href='/projects']",
+					"settleMs": 1400
+				},
+				{
+					"kind": "waitFor",
+					"selector": "main input[type='search'][placeholder='Search']"
+				},
+				{
+					"kind": "wait",
+					"ms": 1000
+				},
+				{
+					"kind": "type",
+					"selector": "main input[type='search'][placeholder='Search']",
+					"value": "Automata",
+					"delayMs": 130,
+					"settleMs": 800
+				},
+				{
+					"kind": "waitFor",
+					"selector": "main a[href='/projects/proj-resq-viz']",
+					"state": "hidden"
+				},
+				{
+					"kind": "wait",
+					"ms": 1600
+				},
+				{
+					"kind": "type",
+					"selector": "main input[type='search'][placeholder='Search']",
+					"value": "ResQ Platform",
+					"delayMs": 90,
+					"settleMs": 800
+				},
+				{
+					"kind": "waitFor",
+					"selector": "main a[href='/projects/proj-typescript-automata']",
+					"state": "hidden"
+				},
+				{
+					"kind": "waitFor",
+					"selector": "main a[href='/projects/proj-resq-developer-platform']"
+				}
+			]
+		},
+		{
+			"name": "resq-platform",
+			"caption": "Case studies with source, context, and screenshots",
+			"readySelector": "main a[href='/projects/proj-resq-developer-platform']",
+			"holdMs": 3000,
+			"steps": [
+				{
+					"kind": "click",
+					"selector": "main a[href='/projects/proj-resq-developer-platform']",
+					"settleMs": 1000
+				},
+				{
+					"kind": "waitFor",
+					"selector": "main a[aria-label^='Open screen 1']"
+				}
+			]
+		},
+		{
+			"name": "inside-the-project",
+			"caption": "A closer look at the work",
+			"holdMs": 1800,
+			"steps": [
+				{
+					"kind": "click",
+					"selector": "main a[aria-label^='Open screen 1']",
+					"settleMs": 1800
+				},
+				{
+					"kind": "click",
+					"selector": "[role='dialog'] button[aria-label='Next screen']",
+					"settleMs": 1600
+				},
+				{
+					"kind": "click",
+					"selector": "[role='dialog'] button[aria-label='Next screen']",
+					"settleMs": 800
+				}
+			]
+		},
+		{
+			"name": "experience",
+			"url": "/experience",
+			"caption": "Experience across teams and disciplines",
+			"readySelector": "main a[href='#role-exp-develop-for-good']",
+			"holdMs": 2500,
+			"steps": [
+				{
+					"kind": "hover",
+					"selector": "main a[href='#role-exp-develop-for-good']",
+					"settleMs": 700
+				}
+			]
+		},
+		{
+			"name": "role-progression",
+			"url": "/experience/exp-develop-for-good",
+			"caption": "From Software Engineer to Program Lead",
+			"readySelector": "main h1",
+			"holdMs": 3000,
+			"steps": [
+				{
+					"kind": "wait",
+					"ms": 1200
+				},
+				{
+					"kind": "scroll",
+					"y": 350,
+					"durationMs": 1200,
+					"settleMs": 500
+				}
+			]
+		},
+		{
+			"name": "live-activity",
+			"url": "/stats",
+			"caption": "Live activity, with freshness shown for each source",
+			"readySelector": "#stats-github",
+			"holdMs": 3500,
+			"steps": []
+		},
+		{
+			"name": "beyond-the-code",
+			"url": "/places/4db03b91-fbcc-4ce0-a85d-87e7de6364fd",
+			"caption": "Places, hackathons, and moments along the way",
+			"readySelector": "main h1",
+			"holdMs": 3000,
+			"steps": [
+				{
+					"kind": "scroll",
+					"y": 180,
+					"durationMs": 900,
+					"settleMs": 800
+				}
+			]
+		},
+		{
+			"name": "lets-build",
+			"url": "/",
+			"caption": "mikeodnis.dev · Available for consulting at atroviola.com",
+			"readySelector": "#home-title",
+			"holdMs": 3500,
+			"steps": [
+				{
+					"kind": "hover",
+					"selector": "main a[href='https://atroviola.com']",
+					"settleMs": 500
+				}
+			]
+		}
+	]
+}

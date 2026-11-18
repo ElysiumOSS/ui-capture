@@ -107,3 +107,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/prepare
       - run: bun run tsc
+
+  integration:
+    name: Browser and video integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:integration
