@@ -18,6 +18,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
+import { runMusicFromArgs } from "./music-cli.js";
 import type { CaptureConfigOverrides, CaptureState } from "./schemas.js";
 import { CaptureConfigLive, UICaptureService } from "./service.js";
 import { captureShowcase } from "./showcase.js";
@@ -40,9 +41,16 @@ const BOOLEAN_FLAGS = [
  * Options whose value is allowed to look like a flag. Chromium switches start
  * with `--`, so the parser has to be told not to mistake them for options.
  */
-const VALUE_FLAGS = ["launch-args", "states", "state-filter", "showcase"];
+const VALUE_FLAGS = [
+	"launch-args",
+	"states",
+	"state-filter",
+	"showcase",
+	"soundtrack",
+];
 
 export const USAGE = `Usage: ui-capture <url> [options]
+       ui-capture music <search|fetch|import|mix> [options]
 
 Crawl a website and capture full-page screenshots (PNG/WebP/JPEG) and
 optional multi-quality videos for every reachable internal route.
@@ -64,7 +72,7 @@ Options:
                               (this opens menus so links become discoverable;
                               it is not a capture-state mechanism — see
                               --states for that)
-  --showcase <path>           Record one continuous scripted tour as MP4, with\n                              scene stills, captions and a report (exclusive mode;\n                              default viewport: desktop:1920x1080)\n  --states <path>             JSON file of named interaction scripts. Each
+  --showcase <path>           Record one continuous scripted tour as MP4, with\n                              scene stills, captions and a report (exclusive mode;\n                              default viewport: desktop:1920x1080)\n  --soundtrack <track.json>   Add a local music asset to --showcase (silent by default)\n  --states <path>             JSON file of named interaction scripts. Each
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
                               app's dialogs and workspaces get captured too.
@@ -123,6 +131,7 @@ Examples:
   ui-capture https://example.com --launch-args "--enable-blink-features=CanvasDrawElement"
   ui-capture http://localhost:5173 --max-depth 0 --states ./ui-capture.states.json
   ui-capture http://localhost:5173 --states ./states.json --state-filter fleet-editor
+  ui-capture music --help
 `;
 
 const printUsage = (): void => {
@@ -194,6 +203,7 @@ export interface CliInvocation {
 	 */
 	readonly statesPath?: string;
 	readonly showcasePath?: string;
+	readonly soundtrackPath?: string;
 	readonly stateFilter?: ReadonlyArray<string>;
 	readonly failOnStateError: boolean;
 }
@@ -212,6 +222,13 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 	const opts = parsed.options;
 	const overrides: CaptureConfigOverrides = {};
 	const showcase = opts.showcase;
+	const soundtrack = opts.soundtrack;
+	if (soundtrack !== undefined) {
+		if (showcase === undefined)
+			throw new Error("--soundtrack requires --showcase");
+		if (typeof soundtrack !== "string" || !soundtrack.trim())
+			throw new Error("--soundtrack requires a track.json file path");
+	}
 	if (showcase !== undefined) {
 		if (typeof showcase !== "string" || showcase.trim() === "")
 			throw new Error("--showcase requires a JSON file path");
@@ -357,6 +374,9 @@ export const buildInvocation = (parsed: ParsedArgs): CliInvocation => {
 	return {
 		url,
 		overrides,
+		...(typeof soundtrack === "string"
+			? { soundtrackPath: path.resolve(soundtrack) }
+			: {}),
 		...(statesPath !== undefined ? { statesPath } : {}),
 		...(typeof showcase === "string"
 			? { showcasePath: path.resolve(process.cwd(), showcase) }
@@ -395,6 +415,10 @@ export const parseCliArgs = (argv: readonly string[]): ParsedArgs =>
 	parseArgs([...argv], BOOLEAN_FLAGS, VALUE_FLAGS);
 
 export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
+	if (argv[0] === "music") {
+		await runMusicFromArgs(argv.slice(1));
+		return;
+	}
 	const parsed = parseCliArgs(argv);
 
 	if (parsed.options.help === true || argv.length === 0) {
@@ -427,7 +451,7 @@ export const runFromArgs = async (argv: readonly string[]): Promise<void> => {
 				invocation.url,
 				showcase,
 				invocation.overrides,
-				{ signal: cancellation.signal },
+				{ signal: cancellation.signal, soundtrack: invocation.soundtrackPath },
 			);
 			for (const report of reports)
 				console.log(

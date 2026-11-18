@@ -165,6 +165,7 @@ Options:
   --showcase <path>           Record one continuous scripted tour as MP4, with
                               scene stills, captions and a report (exclusive mode;
                               default viewport: desktop:1920x1080)
+  --soundtrack <track.json>   Add a local music asset to --showcase (silent by default)
   --states <path>             JSON file of named interaction scripts. Each
                               named state is performed on a fresh page load
                               and yields its own capture set, so a single-route
@@ -224,7 +225,25 @@ Examples:
   ui-capture https://example.com --launch-args "--enable-blink-features=CanvasDrawElement"
   ui-capture http://localhost:5173 --max-depth 0 --states ./ui-capture.states.json
   ui-capture http://localhost:5173 --states ./states.json --state-filter fleet-editor
+  ui-capture music --help
 ```
+
+## Music for demos
+
+Find a track, listen in a browser and add it to a completed video:
+
+```bash
+ui-capture music search "ambient electronic" --output-dir ./music/search-1
+# Open ./music/search-1/index.html, verify the source license, then copy a result UUID.
+ui-capture music fetch <uuid-from-results> --output-dir ./music/selected
+ui-capture music mix ./tour.mp4 --track ./music/selected/track.json \
+  --output ./tour-with-music.mp4
+```
+
+[The music guide](./MUSIC.md) covers previews, Mixkit imports, direct audio URLs, attribution, volume/fades and new recordings with `--soundtrack`.
+Openverse search accepts CC0, Public Domain Mark and CC BY music, with source verification required before publishing.
+Keep the generated credits and publish any required attribution with the video.
+Run `ui-capture music --help` for command options.
 
 ## Showcase videos
 
@@ -252,7 +271,8 @@ Its selectors are tied to that site's current markup; update them when the site 
 ```bash
 ui-capture https://mikeodnis.dev \
   --showcase ./examples/portfolio.showcase.json \
-  --output-dir ./portfolio-take-1 --color-scheme dark --wait-until networkidle
+  --output-dir ./portfolio-take-1 --color-scheme dark --wait-until networkidle \
+  --launch-args "--window-size=1920,1080"
 ```
 
 ### Tour format
@@ -372,7 +392,8 @@ demo-take-1/showcases/website-demo/desktop/
     └── about.png
 ```
 
-The final MP4 uses H.264, `yuv420p`, constant 30 fps and fast-start metadata, with no audio track.
+The final MP4 uses H.264, `yuv420p`, constant 30 fps and fast-start metadata.
+It is silent by default; `--soundtrack <track.json>` adds licensed local music and credit sidecars.
 Odd viewport dimensions are padded to the next even pixel for encoding.
 Scene PNGs retain the requested viewport dimensions, and `poster.png` copies the first scene screenshot.
 

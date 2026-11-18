@@ -24,6 +24,23 @@ export {
 	StateCaptureError,
 	StateDefinitionError,
 } from "./errors.js";
+// Licensed local music assets and soundtrack mixing.
+export {
+	fetchMusic,
+	type ImportMusicOptions,
+	importMusic,
+	loadMusicManifest,
+	type MusicAssetOptions,
+	type MusicManifest,
+	type MusicTrack,
+	searchMusic,
+} from "./music.js";
+export { buildMusicInvocation, MUSIC_USAGE } from "./music-cli.js";
+export {
+	type MusicMixOptions,
+	type MusicMixSettings,
+	mixMusic,
+} from "./music-mix.js";
 // CLI runner (also useful for embedding the CLI in another tool)
 export { buildInvocation, parseCliArgs, runFromArgs, USAGE } from "./runner.js";
 // Schemas / configuration

@@ -26,6 +26,12 @@ import {
 	type Page,
 	type Video,
 } from "playwright";
+import { loadMusicManifest } from "./music.js";
+import {
+	type MusicMixSettings,
+	validateMusicMixSettings,
+} from "./music-mix.js";
+import { probeMusicMedia } from "./music-process.js";
 import {
 	type CaptureConfig,
 	type CaptureConfigOverrides,
@@ -84,6 +90,9 @@ export interface ShowcaseReport {
 	error?: string;
 }
 export interface ShowcaseOptions {
+	readonly soundtrack?: string;
+	readonly music?: MusicMixSettings;
+	readonly ffprobePath?: string;
 	readonly signal?: AbortSignal;
 }
 
@@ -97,6 +106,7 @@ const recordViewport = async (
 	viewport: ViewportConfig,
 	outputDir: string,
 	signal: AbortSignal,
+	options: ShowcaseOptions,
 ): Promise<ShowcaseReport> => {
 	const executionStarted = performance.now();
 	const recordAbort = new AbortController();
@@ -473,13 +483,19 @@ const recordViewport = async (
 			sourcePath: path.join(outputDir, "source.webm"),
 			outputPath: path.join(outputDir, "showcase.mp4"),
 			durationMs: report.durationMs,
+			soundtrack: options.soundtrack,
+			music: options.music,
+			ffprobePath: options.ffprobePath,
 			signal,
 		});
 		signal.throwIfAborted();
 		report.trimStartMs = exported.trimStartMs;
 		report.status = "complete";
 	} catch (error) {
-		await fs.rm(path.join(outputDir, "showcase.mp4"), { force: true });
+		for (const suffix of ["", ".credits.txt", ".music.json"])
+			await fs.rm(path.join(outputDir, `showcase.mp4${suffix}`), {
+				force: true,
+			});
 		report.status = "failed";
 		report.error = message(error);
 		report.durationMs = report.durationMs || now();
@@ -489,7 +505,10 @@ const recordViewport = async (
 	try {
 		await writeShowcaseReport(report);
 	} catch (error) {
-		await fs.rm(path.join(outputDir, "showcase.mp4"), { force: true });
+		for (const suffix of ["", ".credits.txt", ".music.json"])
+			await fs.rm(path.join(outputDir, `showcase.mp4${suffix}`), {
+				force: true,
+			});
 		throw error;
 	}
 	if (failure)
@@ -515,6 +534,15 @@ export const captureShowcase = async (
 		throw new Error("showcase is exclusive; states cannot be combined with it");
 	validateShowcase(tour, seedUrl, config);
 	options.signal?.throwIfAborted();
+	if (options.music && !options.soundtrack)
+		throw new Error("Showcase music settings require a soundtrack");
+	if (options.soundtrack) {
+		validateMusicMixSettings(options.music ?? {});
+		const asset = await loadMusicManifest(options.soundtrack, options.signal);
+		await probeMusicMedia(asset.audioPath, "audio", options.ffprobePath, {
+			signal: options.signal,
+		});
+	}
 	const root = path.resolve(config.outputDir, "showcases", tour.name);
 	await fs.mkdir(path.dirname(root), { recursive: true });
 	try {
@@ -553,6 +581,7 @@ export const captureShowcase = async (
 					viewport,
 					outputDir,
 					signal,
+					options,
 				),
 			);
 		}

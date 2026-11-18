@@ -15,6 +15,7 @@
  * limitations under the License.
  *
  */
+// cspell:words lavfi
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -24,6 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { importMusic } from "./music.js";
 import { captureShowcase } from "./showcase.js";
 import { showPresentation } from "./showcase-presentation.js";
 
@@ -96,6 +98,67 @@ describe.skipIf(!RUN)("continuous showcase recording", () => {
 		outputDir: output,
 		viewports: [{ name: "fixture", width: 640, height: 360 }],
 		waitUntil: "domcontentloaded" as const,
+	});
+	it("adds a selected local soundtrack to a new showcase with provenance", async () => {
+		const tone = path.join(output, "tone.wav");
+		await exec("ffmpeg", [
+			"-v",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=3",
+			tone,
+		]);
+		await importMusic(tone, {
+			title: "Generated tone",
+			creator: "Test",
+			sourceUrl: "https://example.com",
+			license: "test",
+			licenseUrl: "https://example.com/license",
+			outputDir: path.join(output, "music"),
+		});
+		const [report] = await captureShowcase(
+			seed,
+			{
+				version: 1,
+				name: "music",
+				scenes: [
+					{ name: "intro", readySelector: "#ready", holdMs: 1500, steps: [] },
+				],
+			},
+			config(),
+			{
+				soundtrack: path.join(output, "music", "track.json"),
+				music: { fadeIn: 0, fadeOut: 0 },
+			},
+		);
+		const result = path.join(report.outputDir, "showcase.mp4");
+		const metadata = JSON.parse(
+			(
+				await exec("ffprobe", [
+					"-v",
+					"error",
+					"-show_streams",
+					"-of",
+					"json",
+					result,
+				])
+			).stdout,
+		);
+		expect(
+			metadata.streams.some(
+				(stream: { codec_type: string }) => stream.codec_type === "audio",
+			),
+		).toBe(true);
+		expect(await fs.readFile(`${result}.credits.txt`, "utf8")).toContain(
+			"Generated tone",
+		);
+		expect(
+			(await fs.readdir(report.outputDir)).some((name) =>
+				name.includes("partial"),
+			),
+		).toBe(false);
 	});
 	it("records typing, dialog, scroll and navigation once with correctly trimmed H264 video", async () => {
 		mutations = 0;

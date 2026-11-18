@@ -35,14 +35,14 @@ Never change the original video or overwrite an existing output.
 
 ## Primary references
 
-- https://api.openverse.org/v1/
-- https://docs.openverse.org/api/reference/search_algorithm.html
-- https://mixkit.co/free-stock-music/
-- https://mixkit.co/license/modal/musicFree/
-- https://mixkit.co/terms/
-- https://developers.epidemicsound.com/docs/
-- https://creativecommons.org/cc-licenses/
-- https://www.spotify.com/us/legal/end-user-agreement/
+- <https://api.openverse.org/v1/>
+- <https://docs.openverse.org/api/reference/search_algorithm.html>
+- <https://mixkit.co/free-stock-music/>
+- <https://mixkit.co/license/modal/musicFree/>
+- <https://mixkit.co/terms/>
+- <https://developers.epidemicsound.com/docs/>
+- <https://creativecommons.org/cc-licenses/>
+- <https://www.spotify.com/us/legal/end-user-agreement/>
 
 An actual anonymous Openverse request returned 66 matching ambient music results, including CC BY tracks with playable Jamendo asset URLs.
 The probe is saved at /tmp/ui-capture-openverse-probe.json.

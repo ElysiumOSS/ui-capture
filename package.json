@@ -29,6 +29,7 @@
 	"files": [
 		"LICENSE.md",
 		"README.md",
+		"MUSIC.md",
 		"lib/",
 		"package.json"
 	],
